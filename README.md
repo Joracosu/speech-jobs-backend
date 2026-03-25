@@ -8,7 +8,7 @@ This project is being built as a professional backend portfolio piece. The main 
 
 Early development.
 
-The repository is currently being structured and documented before implementation begins.
+The repository now includes an executable FastAPI baseline with `GET /health` and one basic automated test.
 
 ## v1 Goals
 
@@ -23,6 +23,7 @@ Version 1 is planned to include:
 - Local development with Docker Compose
 - Database schema management with migrations
 - Basic tests and validation workflow
+- Minimal visible CI/CD for install, tests, and basic app verification
 
 ## Architecture Direction
 

@@ -31,8 +31,9 @@ The exact setup commands may evolve, but the expected workflow is:
 1. Clone the repository.
 2. Create and activate `/.venv`.
 3. Install the required dependencies.
-4. Confirm that the selected interpreter belongs to `/.venv`.
-5. Run the available validation commands before considering the work complete.
+4. Install the project in editable mode with `pip install -e .`.
+5. Confirm that the selected interpreter belongs to `/.venv`.
+6. Run the available validation commands before considering the work complete.
 
 ## Validation Expectations
 
