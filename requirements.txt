@@ -1,0 +1,5 @@
+# This file will store the exact pinned dependencies installed in the
+# project virtual environment.
+#
+# At this stage of the project, dependencies have not been installed yet.
+# Update this file only after installing packages inside .venv.

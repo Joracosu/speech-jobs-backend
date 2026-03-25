@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speech-jobs-backend"
+version = "0.1.0"
+description = "Asynchronous backend service for audio transcription and speaker diarization."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+keywords = ["backend", "fastapi", "transcription", "diarization", "audio", "jobs"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Framework :: FastAPI",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
