@@ -41,6 +41,8 @@ When schema changes are introduced, the expected local workflow now also include
 - `alembic upgrade head`
 - `alembic current`
 
+Local upload validation also expects `ffprobe` to be available in `PATH`.
+
 ## Validation Expectations
 
 Before a contribution is considered complete, validate at least the parts that were affected.

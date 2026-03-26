@@ -8,7 +8,7 @@ This project is being built as a professional backend portfolio piece. The main 
 
 Active development.
 
-The repository now includes an executable FastAPI baseline with `GET /health`, centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a minimal validated persistence roundtrip.
+The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a minimal validated persistence roundtrip.
 
 ## v1 Goals
 
@@ -78,3 +78,8 @@ The repository will progressively include:
 This repository follows an incremental development approach with small, stable, reviewable steps.
 
 Implementation details, coding rules, architectural decisions, milestones, and execution planning are documented in dedicated project files inside the repository.
+
+## Demo Audio Sources
+
+- `conversation_two_speakers_10m.m4a`: excerpt from "Colm Walsh on holy wells and other places around Graiguenamanagh", source Wikimedia Commons, author A.-K. D., license CC0 1.0
+- `monologue_james_6m20s.m4a`: source recording "James speaking West Riding Yorkshire English", source Wikimedia Commons / Wikitongues, author Wikitongues Inc, license CC0 1.0
