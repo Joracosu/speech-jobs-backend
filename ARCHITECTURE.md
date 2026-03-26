@@ -88,15 +88,18 @@ Storage is intentionally local in v1 to keep the system simple and reproducible.
 
 ### 5. Processing Layer
 
-**Technology:** `faster-whisper` + `pyannote.audio`
+**Current implementation:** placeholder processing inside the worker
+
+**Next-stage planned technology:** `faster-whisper` + `pyannote.audio`
 
 The processing layer is responsible for:
 
 - loading the stored audio input
-- running transcription
-- running speaker diarization
+- running the current placeholder processing flow
 - assembling the final structured result
 - collecting processing metadata
+
+Real transcription and speaker diarization are planned next-stage processing work and are not implemented yet.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 
@@ -118,18 +121,16 @@ The processing layer must be isolated from the API layer and remain callable fro
 2. The worker claims one job atomically.
 3. The worker updates the job to `running`.
 4. The worker loads the file from storage.
-5. The worker runs transcription.
-6. The worker runs speaker diarization.
-7. The worker builds the final result payload.
-8. The worker stores the result in `job_results`.
-9. The worker marks the job as `completed`.
-10. If a failure occurs, the worker marks the job as `failed` and stores error details.
+5. The worker runs placeholder processing.
+6. The worker stores the placeholder result in `job_results`.
+7. The worker marks the job as `completed`.
+8. If a failure occurs, the worker marks the job as `failed` and stores error details.
 
 ### Retrieval
 
 1. A client requests job status through the API.
 2. The API reads the job record from the database.
-3. If requested, the API returns the persisted final result.
+3. Result retrieval remains part of the planned API surface, but is not implemented yet.
 
 ---
 
@@ -143,7 +144,7 @@ The initial API surface is intentionally small.
 - `POST /jobs/upload`
 - `GET /jobs`
 - `GET /jobs/{job_id}`
-- `GET /jobs/{job_id}/result`
+- planned next: `GET /jobs/{job_id}/result`
 
 ### Not included in v1
 
@@ -341,6 +342,7 @@ The system should expose clear, limited, predictable error categories.
 ### Planned error codes
 
 - `unsupported_format`
+- `missing_input_file`
 - `storage_error`
 - `processing_error`
 - `diarization_error`
