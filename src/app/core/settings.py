@@ -3,9 +3,10 @@
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import Field, computed_field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 PROJECT_DISTRIBUTION_NAME = "speech-jobs-backend"
@@ -49,7 +50,7 @@ class Settings(BaseSettings):
     delete_input_on_success: bool = False
     store_intermediate_artifacts: bool = False
     max_upload_size_mb: int = 200
-    allowed_audio_extensions: list[str] = Field(
+    allowed_audio_extensions: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["m4a", "mp3", "wav", "flac", "ogg", "opus"]
     )
     huggingface_token: str | None = None

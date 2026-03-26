@@ -35,6 +35,12 @@ The exact setup commands may evolve, but the expected workflow is:
 5. Confirm that the selected interpreter belongs to `/.venv`.
 6. Run the available validation commands before considering the work complete.
 
+When schema changes are introduced, the expected local workflow now also includes Alembic commands such as:
+
+- `alembic revision --autogenerate -m "your message"`
+- `alembic upgrade head`
+- `alembic current`
+
 ## Validation Expectations
 
 Before a contribution is considered complete, validate at least the parts that were affected.

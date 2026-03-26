@@ -37,7 +37,11 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     status: Mapped[JobStatus] = mapped_column(
-        SQLAlchemyEnum(JobStatus, name="job_status"),
+        SQLAlchemyEnum(
+            JobStatus,
+            name="job_status",
+            values_callable=lambda enum_class: [member.value for member in enum_class],
+        ),
         default=JobStatus.PENDING,
         nullable=False,
     )
