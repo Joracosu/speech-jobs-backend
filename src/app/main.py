@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
+from app.api.routes.jobs import router as jobs_router
 from app.core.settings import get_settings
 
 
@@ -15,6 +16,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
     )
     application.include_router(health_router)
+    application.include_router(jobs_router)
     return application
 
 
