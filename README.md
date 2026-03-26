@@ -6,9 +6,9 @@ This project is being built as a professional backend portfolio piece. The main 
 
 ## Status
 
-Early development.
+Active development.
 
-The repository now includes an executable FastAPI baseline with `GET /health` and one basic automated test.
+The repository now includes an executable FastAPI baseline with `GET /health`, centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a minimal validated persistence roundtrip.
 
 ## v1 Goals
 
