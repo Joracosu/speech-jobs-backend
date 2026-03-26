@@ -43,6 +43,8 @@ When schema changes are introduced, the expected local workflow now also include
 
 Local upload validation also expects `ffprobe` to be available in `PATH`.
 
+The local worker can be run with `python -m app.worker.main` or `python -m app.worker.main --once`.
+
 ## Validation Expectations
 
 Before a contribution is considered complete, validate at least the parts that were affected.
