@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import Job, JobResult, JobStatus
+from app.worker.asr import AsrExecutionError, AsrTranscriptionResult
 from app.worker.service import run_worker_once
 
 
@@ -51,13 +52,39 @@ def test_run_worker_once_returns_false_with_no_pending_jobs(
         assert session.scalar(select(JobResult.id).limit(1)) is None
 
 
-def test_run_worker_once_completes_pending_job_and_persists_placeholder_result(
+def test_run_worker_once_completes_pending_job_and_persists_asr_result(
     session_factory: sessionmaker[Session],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worker should process an existing input file into a completed placeholder job."""
+    """Worker should persist a completed ASR-shaped result on success."""
     input_path = tmp_path / "input.wav"
-    input_path.write_bytes(b"placeholder-audio")
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [
+                    {"id": 0, "start": 0.0, "end": 0.5, "text": "hello"},
+                    {"id": 1, "start": 0.5, "end": 1.0, "text": "world"},
+                ],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
 
     with session_factory() as session:
         job = Job(
@@ -94,16 +121,28 @@ def test_run_worker_once_completes_pending_job_and_persists_placeholder_result(
             select(JobResult).where(JobResult.job_id == job_id)
         )
         assert persisted_result is not None
-        assert persisted_result.transcript_text == ""
+        assert persisted_result.transcript_text == "hello world"
         assert persisted_result.transcript_json == {
-            "segments": [],
-            "processor": "placeholder",
+            "segments": [
+                {"id": 0, "start": 0.0, "end": 0.5, "text": "hello"},
+                {"id": 1, "start": 0.5, "end": 1.0, "text": "world"},
+            ],
+            "language": "en",
+            "engine": "faster-whisper",
+            "model": "small",
         }
         assert persisted_result.speaker_segments_json is None
-        assert persisted_result.detected_language is None
+        assert persisted_result.detected_language == "en"
         assert persisted_result.metadata_json == {
-            "mode": "placeholder",
+            "mode": "asr",
+            "engine": "faster-whisper",
+            "profile": "balanced",
+            "model": "small",
+            "requested_device": "auto",
+            "resolved_device": "cpu",
+            "compute_type": "int8",
             "worker_id": "local-worker-1",
+            "empty_transcript": False,
         }
 
 
@@ -150,3 +189,114 @@ def test_run_worker_once_marks_job_failed_when_input_file_is_missing(
             select(JobResult).where(JobResult.job_id == job_id)
         )
         assert persisted_result is None
+
+
+def test_run_worker_once_marks_job_failed_on_asr_error(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker should persist a clean failed state when ASR execution fails."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: (_ for _ in ()).throw(
+            AsrExecutionError("faster-whisper transcription failed")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="d" * 64,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    processed_job = run_worker_once(session_factory=session_factory)
+
+    assert processed_job is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.FAILED
+        assert persisted_job.error_code == "asr_error"
+        assert persisted_job.error_message == "faster-whisper transcription failed"
+        assert session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        ) is None
+
+
+def test_run_worker_once_fails_when_job_already_has_a_result(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker should not overwrite or duplicate an already persisted result."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    def _unexpected_transcribe(**_: object) -> AsrTranscriptionResult:
+        raise AssertionError("transcribe_audio should not be called")
+
+    monkeypatch.setattr("app.worker.service.transcribe_audio", _unexpected_transcribe)
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="e" * 64,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        job.result = JobResult(
+            transcript_text="already there",
+            transcript_json={
+                "segments": [],
+                "language": None,
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            speaker_segments_json=None,
+            detected_language=None,
+            metadata_json={"mode": "asr"},
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    processed_job = run_worker_once(session_factory=session_factory)
+
+    assert processed_job is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.FAILED
+        assert persisted_job.error_code == "processing_error"
+        assert persisted_job.error_message == "Job already has a persisted result."
+
+        persisted_results = list(
+            session.scalars(select(JobResult).where(JobResult.job_id == job_id)).all()
+        )
+        assert len(persisted_results) == 1
+        assert persisted_results[0].transcript_text == "already there"

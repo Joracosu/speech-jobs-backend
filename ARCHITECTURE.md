@@ -28,6 +28,8 @@ The main architectural goal is to demonstrate clear backend system design rather
 
 ## Technical Decisions
 
+These decisions capture backend choices already materialized in the current repository or directly governing its immediate evolution.
+
 ### 1. Dedicated worker instead of in-process/background execution
 
 - Context: the repository already exposes upload and job-query APIs, while processing must remain asynchronous and observable.
@@ -148,18 +150,18 @@ Storage is intentionally local in v1 to keep the system simple and reproducible.
 
 ### 5. Processing Layer
 
-**Current implementation:** placeholder processing inside the worker
+**Current implementation:** real ASR transcription inside the worker with `faster-whisper`
 
-**Next-stage planned technology:** `faster-whisper` + `pyannote.audio`
+**Next-stage planned technology:** `pyannote.audio` for diarization
 
 The processing layer is responsible for:
 
 - loading the stored audio input
-- running the current placeholder processing flow
+- running the current ASR transcription flow
 - assembling the final structured result
 - collecting processing metadata
 
-Real transcription and speaker diarization are planned next-stage processing work and are not implemented yet.
+Speaker diarization remains future processing work and is not implemented yet.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 
@@ -181,8 +183,8 @@ The processing layer must be isolated from the API layer and remain callable fro
 2. The worker claims one job atomically.
 3. The worker updates the job to `running`.
 4. The worker loads the file from storage.
-5. The worker runs placeholder processing.
-6. The worker stores the placeholder result in `job_results`.
+5. The worker runs ASR transcription.
+6. The worker stores the transcription result in `job_results`.
 7. The worker marks the job as `completed`.
 8. If a failure occurs, the worker marks the job as `failed` and stores error details.
 
