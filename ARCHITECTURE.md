@@ -26,6 +26,66 @@ The main architectural goal is to demonstrate clear backend system design rather
 
 ---
 
+## Technical Decisions
+
+### 1. Dedicated worker instead of in-process/background execution
+
+- Context: the repository already exposes upload and job-query APIs, while processing must remain asynchronous and observable.
+- Decision: keep heavy job execution in a dedicated worker process, separate from the FastAPI request process.
+- Why this choice: it keeps HTTP latency predictable, makes lifecycle handling explicit, and preserves a clean API/worker split.
+- Trade-offs / what we are not doing: no in-process background tasks and no API-side execution shortcuts, even for placeholder processing.
+- Interview defense: this keeps the system readable and production-shaped early. The separation is useful before model complexity arrives, not after.
+
+### 2. DB-backed claim with PostgreSQL locking instead of naive polling/claiming
+
+- Context: pending jobs are persisted in PostgreSQL and the worker must avoid accidental double processing.
+- Decision: claim jobs through a database transaction using PostgreSQL row locking (`FOR UPDATE SKIP LOCKED`).
+- Why this choice: the database is already the source of truth for lifecycle state, so claim safety belongs there too.
+- Trade-offs / what we are not doing: no naive "read pending then update later" flow, and no ad hoc in-memory coordination between worker loops.
+- Interview defense: this is the smallest correct concurrency boundary for the current system. It is local-friendly now and still compatible with future multi-worker expansion.
+
+### 3. PostgreSQL + SQLAlchemy + Alembic are enough at this stage; no queue infrastructure yet
+
+- Context: the current backend already persists jobs and results, versions schema changes, and runs a dedicated worker process.
+- Decision: use PostgreSQL, SQLAlchemy 2.x, and Alembic as the persistence backbone without adding Redis, RabbitMQ, or Celery yet.
+- Why this choice: these tools already cover durable state, schema evolution, lifecycle tracking, and worker coordination for the current slice.
+- Trade-offs / what we are not doing: no queue broker, no distributed orchestration layer, and no extra infrastructure before real scaling pressure exists.
+- Interview defense: this keeps the stack proportional to the implemented requirements. The repository demonstrates persistence and lifecycle discipline without hiding the core design behind premature infrastructure.
+
+### 4. Small explicit API surface instead of broad feature expansion
+
+- Context: the current public backend slice is intentionally limited to health, read-side job access, and upload-driven job creation.
+- Decision: keep the API small and explicit until the core lifecycle and processing path are stable.
+- Why this choice: it keeps contracts easy to reason about and reduces accidental scope creep while the system foundations are still taking shape.
+- Trade-offs / what we are not doing: no retries, cancellation, bulk flows, artifact downloads, or result endpoint before the underlying behavior is ready.
+- Interview defense: a narrow API is a deliberate quality decision here. It lets the backend prove the important path first instead of scattering effort across partial features.
+
+### 5. Worker/lifecycle first, real ASR afterwards
+
+- Context: the project needs a believable asynchronous job backbone before speech tooling can be integrated safely.
+- Decision: establish upload, persistence, claim logic, lifecycle transitions, and result persistence before adding real ASR or diarization.
+- Why this choice: it isolates infrastructure and state-management problems from model-integration problems, which makes failures easier to understand and fix.
+- Trade-offs / what we are not doing: no early `faster-whisper` integration before the worker path is already behaving like a real job system.
+- Interview defense: sequencing matters in backend work. A stable lifecycle foundation reduces the chance that model integration masks architectural mistakes.
+
+### 6. Transcription-first baseline remains valid if diarization is postponed
+
+- Context: diarization is useful for the intended v1, but it is also the most likely feature to become disproportionately costly or unstable.
+- Decision: keep a transcription-capable backend as a valid publishable baseline even if diarization lands later than planned.
+- Why this choice: it protects delivery quality and lets the repository remain professionally defensible without overpromising on the hardest part.
+- Trade-offs / what we are not doing: no forced all-or-nothing delivery where diarization delays make the whole backend look incomplete.
+- Interview defense: this is controlled scope management, not feature retreat. It preserves a strong backend story while acknowledging the real cost profile of diarization.
+
+### 7. Explicit v1 exclusions as a scope-control choice
+
+- Context: the project is meant to read as a focused backend portfolio piece, not as a broad product platform.
+- Decision: keep auth, cloud deployment, advanced observability, external queueing, and other side tracks explicitly out of v1.
+- Why this choice: it protects architecture clarity and keeps effort concentrated on lifecycle, persistence, and processing behavior.
+- Trade-offs / what we are not doing: no multi-user platform work, no cloud expansion, and no infrastructure polish that does not strengthen the core backend signal.
+- Interview defense: saying "no" is part of backend design quality. The exclusions make the repository more coherent and easier to justify in review.
+
+---
+
 ## Core Components
 
 ### 1. API Layer
