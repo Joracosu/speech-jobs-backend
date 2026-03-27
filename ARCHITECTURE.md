@@ -16,7 +16,7 @@ The application is designed as a **backend-first asynchronous processing system*
 
 The system is intentionally structured around a small number of explicit components:
 
-- **HTTP API** for job creation and result retrieval
+- **HTTP API** for job creation and read-side job access
 - **Database** for persistent job state and results
 - **Worker process** for heavy processing
 - **Local storage** for uploaded audio files and optional generated artifacts
@@ -62,13 +62,13 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no retries, cancellation, bulk flows, artifact downloads, or result endpoint before the underlying behavior is ready.
 - Interview defense: a narrow API is a deliberate quality decision here. It lets the backend prove the important path first instead of scattering effort across partial features.
 
-### 5. Worker/lifecycle first, real ASR afterwards
+### 5. Worker/lifecycle first, then real ASR
 
-- Context: the project needs a believable asynchronous job backbone before speech tooling can be integrated safely.
-- Decision: establish upload, persistence, claim logic, lifecycle transitions, and result persistence before adding real ASR or diarization.
-- Why this choice: it isolates infrastructure and state-management problems from model-integration problems, which makes failures easier to understand and fix.
-- Trade-offs / what we are not doing: no early `faster-whisper` integration before the worker path is already behaving like a real job system.
-- Interview defense: sequencing matters in backend work. A stable lifecycle foundation reduces the chance that model integration masks architectural mistakes.
+- Context: the repository now has a completed worker/lifecycle foundation and has already integrated real ASR on top of it.
+- Decision: the project established upload, persistence, claim logic, lifecycle transitions, and result persistence first, and only then integrated real ASR; diarization remains later work.
+- Why this choice: it isolated infrastructure and state-management problems from model-integration problems, which made the first real ASR slice easier to add cleanly.
+- Trade-offs / what we are not doing: diarization is still postponed, and the repository did not try to integrate all speech features at once.
+- Interview defense: this sequence reduced risk and kept the backend story coherent. The current repo shows that the worker foundation was solved before model complexity was added.
 
 ### 6. Transcription-first baseline remains valid if diarization is postponed
 
@@ -100,7 +100,7 @@ The API layer is responsible for:
 - validating incoming requests
 - storing accepted inputs
 - creating processing jobs in the database
-- exposing job status and job result endpoints
+- exposing job status and read-side job endpoints
 - returning clear error responses
 
 The API must remain lightweight and must not perform heavy speech processing directly.
@@ -158,10 +158,10 @@ The processing layer is responsible for:
 
 - loading the stored audio input
 - running the current ASR transcription flow
-- assembling the final structured result
+- assembling the current transcription-first result
 - collecting processing metadata
 
-Speaker diarization remains future processing work and is not implemented yet.
+Speaker diarization remains future processing work and is not implemented yet. In the current result model, `speaker_segments_json` remains `None`.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 
@@ -192,7 +192,8 @@ The processing layer must be isolated from the API layer and remain callable fro
 
 1. A client requests job status through the API.
 2. The API reads the job record from the database.
-3. Result retrieval remains part of the planned API surface, but is not implemented yet.
+3. Completed jobs may already have a persisted internal result in `job_results`.
+4. Public result retrieval remains part of the planned API surface, but the endpoint is not implemented yet.
 
 ---
 
@@ -295,6 +296,8 @@ Planned fields include:
 - `speaker_segments_json`
 - `detected_language` (nullable)
 - `metadata_json`
+
+At the current stage, `job_results` persists transcription output internally even though a public result retrieval endpoint is still pending.
 
 ### Rationale for separate tables
 
