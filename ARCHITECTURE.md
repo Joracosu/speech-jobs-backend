@@ -62,12 +62,12 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no retries, cancellation, bulk flows, artifact downloads, or result endpoint before the underlying behavior is ready.
 - Interview defense: a narrow API is a deliberate quality decision here. It lets the backend prove the important path first instead of scattering effort across partial features.
 
-### 5. Worker/lifecycle first, then real ASR
+### 5. Worker/lifecycle first, then speech-model integration
 
-- Context: the repository now has a completed worker/lifecycle foundation and has already integrated real ASR on top of it.
-- Decision: the project established upload, persistence, claim logic, lifecycle transitions, and result persistence first, and only then integrated real ASR; diarization remains later work.
-- Why this choice: it isolated infrastructure and state-management problems from model-integration problems, which made the first real ASR slice easier to add cleanly.
-- Trade-offs / what we are not doing: diarization is still postponed, and the repository did not try to integrate all speech features at once.
+- Context: the repository now has a completed worker/lifecycle foundation and has already integrated real ASR and internal diarization on top of it.
+- Decision: the project established upload, persistence, claim logic, lifecycle transitions, and result persistence first, and only then integrated speech models into the worker.
+- Why this choice: it isolated infrastructure and state-management problems from model-integration problems, which made ASR and diarization easier to add cleanly.
+- Trade-offs / what we are not doing: public result retrieval still remains later work, and the repository did not try to integrate every speech-facing concern at once.
 - Interview defense: this sequence reduced risk and kept the backend story coherent. The current repo shows that the worker foundation was solved before model complexity was added.
 
 ### 6. Transcription-first baseline remains valid if diarization is postponed
@@ -150,18 +150,17 @@ Storage is intentionally local in v1 to keep the system simple and reproducible.
 
 ### 5. Processing Layer
 
-**Current implementation:** real ASR transcription inside the worker with `faster-whisper`
-
-**Next-stage planned technology:** `pyannote.audio` for diarization
+**Current implementation:** real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`
 
 The processing layer is responsible for:
 
 - loading the stored audio input
 - running the current ASR transcription flow
-- assembling the current transcription-first result
+- running diarization after successful ASR
+- assembling transcript and speaker segmentation as parallel persisted artifacts
 - collecting processing metadata
 
-Speaker diarization remains future processing work and is not implemented yet. In the current result model, `speaker_segments_json` remains `None`.
+The current result model persists transcript artifacts plus `speaker_segments_json`. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 
@@ -184,9 +183,10 @@ The processing layer must be isolated from the API layer and remain callable fro
 3. The worker updates the job to `running`.
 4. The worker loads the file from storage.
 5. The worker runs ASR transcription.
-6. The worker stores the transcription result in `job_results`.
-7. The worker marks the job as `completed`.
-8. If a failure occurs, the worker marks the job as `failed` and stores error details.
+6. The worker runs speaker diarization.
+7. The worker stores transcript and speaker-segment artifacts in `job_results`.
+8. The worker marks the job as `completed`.
+9. If a failure occurs, the worker marks the job as `failed` and stores error details.
 
 ### Retrieval
 
@@ -297,7 +297,7 @@ Planned fields include:
 - `detected_language` (nullable)
 - `metadata_json`
 
-At the current stage, `job_results` persists transcription output internally even though a public result retrieval endpoint is still pending.
+At the current stage, `job_results` persists transcript output and speaker segments internally even though a public result retrieval endpoint is still pending.
 
 ### Rationale for separate tables
 

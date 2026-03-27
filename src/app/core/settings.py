@@ -54,6 +54,7 @@ class Settings(BaseSettings):
         default_factory=lambda: ["m4a", "mp3", "wav", "flac", "ogg", "opus"]
     )
     huggingface_token: str | None = None
+    diarization_model_id: str = "pyannote/speaker-diarization-community-1"
     app_version_override: str | None = Field(
         default=None,
         validation_alias="APP_VERSION",

@@ -39,6 +39,7 @@ Pygments==2.19.2
 pytest==9.0.2
 python-dotenv==1.2.2
 python-multipart==0.0.22
+pyannote.audio==4.0.4
 PyYAML==6.0.3
 rich==14.3.3
 setuptools==82.0.1

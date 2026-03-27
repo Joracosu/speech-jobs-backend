@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.settings import Settings, get_settings
 from app.db import Job, JobResult, JobStatus, create_session_factory, utcnow
 from app.worker.asr import AsrExecutionError, AsrTranscriptionResult, transcribe_audio
+from app.worker.diarization import (
+    DiarizationExecutionError,
+    DiarizationResult,
+    diarize_audio,
+)
 
 
 def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None:
@@ -67,10 +72,11 @@ def _build_completed_metadata(
     settings: Settings,
     profile: str,
     asr_result: AsrTranscriptionResult,
+    diarization_result: DiarizationResult,
 ) -> dict[str, object]:
-    """Return the final metadata payload for a completed ASR job."""
+    """Return the final metadata payload for a completed ASR+diarization job."""
     return {
-        "mode": "asr",
+        "mode": "asr+diarization",
         "engine": asr_result.metadata_json["engine"],
         "profile": profile,
         "model": asr_result.metadata_json["model"],
@@ -79,6 +85,10 @@ def _build_completed_metadata(
         "compute_type": asr_result.metadata_json["compute_type"],
         "worker_id": settings.worker_id,
         "empty_transcript": asr_result.metadata_json["empty_transcript"],
+        "diarization_enabled": diarization_result.metadata_json["diarization_enabled"],
+        "diarization_model_id": diarization_result.metadata_json["diarization_model_id"],
+        "diarization_device": diarization_result.metadata_json["diarization_device"],
+        "speaker_count": diarization_result.metadata_json["speaker_count"],
     }
 
 
@@ -121,8 +131,9 @@ def _persist_completed_job(
     job_id: int,
     settings: Settings,
     asr_result: AsrTranscriptionResult,
+    diarization_result: DiarizationResult,
 ) -> None:
-    """Persist the completed ASR result and terminal job state atomically."""
+    """Persist the completed ASR+diarization result and terminal state atomically."""
     with session_factory() as session, session.begin():
         job = session.get(Job, job_id)
         if job is None:
@@ -138,12 +149,13 @@ def _persist_completed_job(
         job.result = JobResult(
             transcript_text=asr_result.transcript_text,
             transcript_json=asr_result.transcript_json,
-            speaker_segments_json=None,
+            speaker_segments_json=diarization_result.speaker_segments_json,
             detected_language=asr_result.detected_language,
             metadata_json=_build_completed_metadata(
                 settings=settings,
                 profile=job.profile_selected,
                 asr_result=asr_result,
+                diarization_result=diarization_result,
             ),
         )
         job.status = JobStatus.COMPLETED
@@ -168,6 +180,12 @@ def process_claimed_job(
             profile=job_context.profile,
             requested_device=job_context.requested_device,
         )
+        diarization_result = diarize_audio(
+            audio_path=job_context.input_path,
+            requested_device=job_context.requested_device,
+            model_id=settings.diarization_model_id,
+            huggingface_token=settings.huggingface_token,
+        )
     except AsrExecutionError as exc:
         _mark_job_failed(
             session_factory=session_factory,
@@ -176,12 +194,20 @@ def process_claimed_job(
             error_message=str(exc),
         )
         return
+    except DiarizationExecutionError as exc:
+        _mark_job_failed(
+            session_factory=session_factory,
+            job_id=job_id,
+            error_code="diarization_error",
+            error_message=str(exc),
+        )
+        return
     except Exception as exc:
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="processing_error",
-            error_message=f"ASR worker processing failed: {exc}",
+            error_message=f"Worker processing failed: {exc}",
         )
         return
 
@@ -191,13 +217,14 @@ def process_claimed_job(
             job_id=job_id,
             settings=settings,
             asr_result=asr_result,
+            diarization_result=diarization_result,
         )
     except Exception as exc:
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="processing_error",
-            error_message=f"Failed to persist ASR result: {exc}",
+            error_message=f"Failed to persist processing result: {exc}",
         )
 
 

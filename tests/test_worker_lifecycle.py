@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import Job, JobResult, JobStatus
 from app.worker.asr import AsrExecutionError, AsrTranscriptionResult
+from app.worker.diarization import DiarizationExecutionError, DiarizationResult
 from app.worker.service import run_worker_once
 
 
@@ -57,7 +58,7 @@ def test_run_worker_once_completes_pending_job_and_persists_asr_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worker should persist a completed ASR-shaped result on success."""
+    """Worker should persist a completed ASR+diarization result on success."""
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"real-audio-bytes")
 
@@ -82,6 +83,21 @@ def test_run_worker_once_completes_pending_job_and_persists_asr_result(
                 "resolved_device": "cpu",
                 "compute_type": "int8",
                 "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: DiarizationResult(
+            speaker_segments_json=[
+                {"speaker": "speaker_0", "start": 0.0, "end": 0.6},
+                {"speaker": "speaker_1", "start": 0.6, "end": 1.0},
+            ],
+            metadata_json={
+                "diarization_enabled": True,
+                "diarization_model_id": "pyannote/test-model",
+                "diarization_device": "cpu",
+                "speaker_count": 2,
             },
         ),
     )
@@ -131,10 +147,13 @@ def test_run_worker_once_completes_pending_job_and_persists_asr_result(
             "engine": "faster-whisper",
             "model": "small",
         }
-        assert persisted_result.speaker_segments_json is None
+        assert persisted_result.speaker_segments_json == [
+            {"speaker": "speaker_0", "start": 0.0, "end": 0.6},
+            {"speaker": "speaker_1", "start": 0.6, "end": 1.0},
+        ]
         assert persisted_result.detected_language == "en"
         assert persisted_result.metadata_json == {
-            "mode": "asr",
+            "mode": "asr+diarization",
             "engine": "faster-whisper",
             "profile": "balanced",
             "model": "small",
@@ -143,7 +162,87 @@ def test_run_worker_once_completes_pending_job_and_persists_asr_result(
             "compute_type": "int8",
             "worker_id": "local-worker-1",
             "empty_transcript": False,
+            "diarization_enabled": True,
+            "diarization_model_id": "pyannote/test-model",
+            "diarization_device": "cpu",
+            "speaker_count": 2,
         }
+
+
+def test_run_worker_once_persists_empty_speaker_segments_on_success(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful diarization with zero valid segments should persist an empty list."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 0.5, "text": "hello"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: DiarizationResult(
+            speaker_segments_json=[],
+            metadata_json={
+                "diarization_enabled": True,
+                "diarization_model_id": "pyannote/test-model",
+                "diarization_device": "cpu",
+                "speaker_count": 0,
+            },
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="bb" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.COMPLETED
+
+        persisted_result = session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        )
+        assert persisted_result is not None
+        assert persisted_result.speaker_segments_json == []
+        assert persisted_result.metadata_json["speaker_count"] == 0
 
 
 def test_run_worker_once_marks_job_failed_when_input_file_is_missing(
@@ -235,6 +334,76 @@ def test_run_worker_once_marks_job_failed_on_asr_error(
         assert persisted_job.status == JobStatus.FAILED
         assert persisted_job.error_code == "asr_error"
         assert persisted_job.error_message == "faster-whisper transcription failed"
+        assert session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        ) is None
+
+
+def test_run_worker_once_marks_job_failed_on_diarization_error(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker should persist a clean failed state when diarization execution fails."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            DiarizationExecutionError("pyannote.audio diarization failed")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="dd" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    processed_job = run_worker_once(session_factory=session_factory)
+
+    assert processed_job is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.FAILED
+        assert persisted_job.error_code == "diarization_error"
+        assert persisted_job.error_message == "pyannote.audio diarization failed"
         assert session.scalar(
             select(JobResult).where(JobResult.job_id == job_id)
         ) is None
