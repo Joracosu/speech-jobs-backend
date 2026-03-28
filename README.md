@@ -109,6 +109,35 @@ The preflight checks ASR and diarization separately and reports a global `READY`
 
 When diarization succeeds, `speaker_segments_json` is persisted as a JSON list, including `[]` when normalization yields no valid segments. When ASR succeeds but diarization fails in a controlled way, the worker now still preserves the transcript, marks the job as `completed`, stores `speaker_segments_json = None`, and records the degraded diarization outcome in internal result metadata.
 
+## Local Compose Baseline
+
+`S21` adds a minimal CPU-first local baseline with `db`, `api`, and `worker` in `docker-compose.yml`.
+
+Start by copying `.env.example` to `.env`.
+
+Baseline Compose variables:
+
+- `DATABASE_URL` remains part of the app configuration, but Compose overrides it for the in-container `db` service wiring
+- storage settings are also overridden inside Compose so `api` and `worker` share the mounted `./storage` volume through explicit container paths
+
+Optional diarization-enabled path variables:
+
+- `HUGGINGFACE_TOKEN`
+- `DIARIZATION_MODEL_ID`
+
+Minimal local flow:
+
+- `docker compose up -d db`
+- `docker compose run --rm api alembic upgrade head`
+- `docker compose up api worker`
+
+Minimal checks:
+
+- `GET /health` on `http://127.0.0.1:8000/health`
+- `docker compose run --rm worker python -m app.worker.main --preflight --device cpu`
+
+The Compose baseline is intentionally simple and CPU-first. It is meant for local reproducibility, not as a production deployment shape.
+
 ## Public Result Retrieval
 
 Use `GET /jobs/{job_id}/result` to read the curated public result for one persisted job.

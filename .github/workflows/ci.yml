@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: speech_jobs_backend
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d speech_jobs_backend"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/speech_jobs_backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Wait for PostgreSQL readiness
+        run: |
+          python - <<'PY'
+          import time
+          import psycopg
+
+          dsn = "postgresql://postgres:postgres@127.0.0.1:5432/speech_jobs_backend"
+          last_error = None
+
+          for _ in range(30):
+              try:
+                  with psycopg.connect(dsn, connect_timeout=5) as conn:
+                      with conn.cursor() as cursor:
+                          cursor.execute("SELECT 1")
+                  print("PostgreSQL is ready.")
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise SystemExit(f"PostgreSQL did not become ready: {last_error}")
+          PY
+
+      - name: Apply database migrations
+        run: alembic upgrade head
+
+      - name: Run test suite
+        run: pytest -q
+
+      - name: Verify app import
+        run: python -c "from app.main import app; print('ok app', app.title, app.version)"
