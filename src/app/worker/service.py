@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.settings import Settings, get_settings
 from app.db import Job, JobResult, JobStatus, create_session_factory, utcnow
 from app.worker.asr import AsrExecutionError, AsrTranscriptionResult, transcribe_audio
+from app.worker.cleanup import log_storage_cleanup_report, run_storage_cleanup
 from app.worker.diarization import (
     DiarizationExecutionError,
     DiarizationResult,
@@ -349,11 +350,36 @@ def run_worker_forever(
     """Run the worker loop continuously using the configured poll interval."""
     resolved_settings = settings or get_settings()
     resolved_session_factory = session_factory or create_session_factory()
+    processed_jobs_since_cleanup = 0
+    cleanup_every_n_jobs = getattr(
+        resolved_settings,
+        "worker_cleanup_every_n_jobs",
+        None,
+    )
 
     while True:
         processed_job = run_worker_once(
             session_factory=resolved_session_factory,
             settings=resolved_settings,
         )
+        if processed_job:
+            processed_jobs_since_cleanup += 1
+            if (
+                isinstance(cleanup_every_n_jobs, int)
+                and cleanup_every_n_jobs >= 1
+                and processed_jobs_since_cleanup >= cleanup_every_n_jobs
+            ):
+                cleanup_report = run_storage_cleanup(
+                    session_factory=resolved_session_factory,
+                    settings=resolved_settings,
+                )
+                log_storage_cleanup_report(
+                    logger=LOGGER,
+                    trigger="cadence",
+                    report=cleanup_report,
+                )
+                processed_jobs_since_cleanup = 0
+            continue
+
         if not processed_job:
             sleep(resolved_settings.worker_poll_interval_seconds)

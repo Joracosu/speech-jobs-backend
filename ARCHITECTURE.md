@@ -364,14 +364,22 @@ Initial intended defaults:
 
 ### Cleanup strategy
 
-Cleanup should be lightweight.
+Cleanup is now implemented as lightweight worker-driven retention.
 
-In v1 it is acceptable for cleanup logic to run:
+- one best-effort cleanup pass runs at worker startup in the non-preflight path
+- in long-running mode, another cleanup pass may run every configured _N_ processed jobs
+- periodic cleanup is enabled only when `worker_cleanup_every_n_jobs >= 1`
+- a full scheduler is intentionally out of scope for v1
 
-- at worker startup
-- and/or every _N_ processed jobs
+Input cleanup is DB-aware and conservative. Because multiple jobs may reuse the same `stored_path`, cleanup groups by physical input path and only deletes a local file when all rows that reference that path are already terminal and expired by TTL. Active jobs and non-expired terminal references keep the file in place. Cleanup uses its own short-lived DB session and does not share the job-processing transaction.
 
-A full scheduler is intentionally out of scope for v1.
+Rows with blank or missing `stored_path` are skipped safely and silently during cleanup rather than being treated as path-safety violations. They are anomalous data, not a deletion target.
+
+Artifact cleanup remains local and filesystem-based. It only traverses paths under `artifact_storage_dir`, deletes expired files by mtime, prunes empty directories when safe, and remains best-effort. Path deletion is guarded by canonicalized root checks so files outside the configured storage roots are skipped with warnings instead of being removed.
+
+`retention_days = None` disables cleanup for the corresponding category in a safe, non-deleting way and may emit one lightweight warning. Negative retention values also disable the category rather than triggering aggressive deletion.
+
+Database rows and persisted `job_results` remain outside retention cleanup. The database stays the source of truth for lifecycle and result retrieval even after local input/artifact cleanup.
 
 ---
 

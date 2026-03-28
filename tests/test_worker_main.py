@@ -190,6 +190,7 @@ def test_main_once_uses_deferred_db_and_service_imports(
     calls: dict[str, object] = {}
     monkeypatch.delitem(sys.modules, "app.db.config", raising=False)
     monkeypatch.delitem(sys.modules, "app.worker.service", raising=False)
+    monkeypatch.delitem(sys.modules, "app.worker.cleanup", raising=False)
 
     worker_main = _load_worker_main_module()
     settings = SimpleNamespace(
@@ -199,12 +200,28 @@ def test_main_once_uses_deferred_db_and_service_imports(
     )
     monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
 
+    def _run_cleanup(**kwargs: object) -> str:
+        calls["cleanup"] = kwargs
+        return "cleanup-report"
+
+    def _log_cleanup(**kwargs: object) -> None:
+        calls["cleanup_log"] = kwargs
+
     monkeypatch.setitem(
         sys.modules,
         "app.db.config",
         _make_module(
             "app.db.config",
             create_session_factory=lambda: "fake-session-factory",
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.worker.cleanup",
+        _make_module(
+            "app.worker.cleanup",
+            run_storage_cleanup=_run_cleanup,
+            log_storage_cleanup_report=_log_cleanup,
         ),
     )
     monkeypatch.setitem(
@@ -222,7 +239,14 @@ def test_main_once_uses_deferred_db_and_service_imports(
     exit_code = worker_main.main(["--once"])
 
     assert exit_code == 0
-    assert calls == {
+    assert calls["cleanup"] == {
         "session_factory": "fake-session-factory",
         "settings": settings,
     }
+    assert calls["cleanup_log"] == {
+        "logger": worker_main.LOGGER,
+        "trigger": "startup",
+        "report": "cleanup-report",
+    }
+    assert calls["session_factory"] == "fake-session-factory"
+    assert calls["settings"] == settings

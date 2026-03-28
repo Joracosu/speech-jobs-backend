@@ -118,7 +118,34 @@ The API does not expose raw `metadata_json` or internal runtime fields such as `
 
 Successful diarization keeps `speaker_segments_json` as a JSON list, including `[]` when normalization yields no valid segments. Controlled diarization degradation keeps `speaker_segments_json = null` while still returning the preserved transcript.
 
-Storage retention and cleanup remain separate work and are not implemented by this endpoint.
+## Local Storage Cleanup
+
+`S18` now implements lightweight TTL-based cleanup for local storage only.
+
+- uploaded input files under `input_storage_dir`
+- optional local artifacts under `artifact_storage_dir`
+- database rows in `jobs` and `job_results` remain persistent
+
+Cleanup is worker-driven, not scheduler-driven:
+
+- one best-effort cleanup pass runs when the worker starts in the non-preflight path
+- in long-running worker mode, another best-effort cleanup pass runs every `worker_cleanup_every_n_jobs` processed jobs when that setting is `>= 1`
+- if `worker_cleanup_every_n_jobs` is `0`, negative, or `None`, periodic cleanup is disabled without error
+
+Input cleanup is conservative and DB-aware. A physical input file is deleted only when every job that references the same `stored_path` is already terminal (`completed` or `failed`) and expired by TTL. Active jobs and shared paths that still have a non-expired terminal reference are preserved. Cleanup only removes local files, never database results.
+
+Blank or missing `stored_path` values are skipped safely and silently during cleanup. They are treated as anomalous legacy data for retention purposes, not as actionable path-safety failures.
+
+Artifact cleanup stays local and filesystem-based. It deletes expired files under `artifact_storage_dir`, prunes empty directories when safe, and remains a no-op when artifact storage is disabled or absent.
+
+`INPUT_RETENTION_DAYS=None` or `ARTIFACT_RETENTION_DAYS=None` disables cleanup for that category in a safe, non-deleting way and may surface as a lightweight warning/report entry. Negative values also disable cleanup for that category.
+
+Relevant retention settings and defaults:
+
+- `INPUT_RETENTION_DAYS=7`
+- `ARTIFACT_RETENTION_DAYS=7`
+- `WORKER_CLEANUP_EVERY_N_JOBS=10`
+- `STORE_INTERMEDIATE_ARTIFACTS=false`
 
 ## Demo Audio Sources
 
