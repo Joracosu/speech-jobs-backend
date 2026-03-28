@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import warnings
+
+import numpy
 
 from app.worker.runtime_checks import get_primary_issue, inspect_diarization_runtime
 
@@ -28,7 +31,18 @@ class DiarizationResult:
 def _load_pipeline(model_id: str, huggingface_token: str) -> Any:
     """Load a diarization pipeline from pyannote.audio."""
     try:
-        from pyannote.audio import Pipeline
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                module=r"pyannote\.audio\.core\.io",
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*torchcodec is not installed correctly so built-in audio decoding will fail.*",
+                category=UserWarning,
+            )
+            from pyannote.audio import Pipeline
     except Exception as exc:
         raise DiarizationExecutionError(
             f"Unable to import {ENGINE_NAME}: {exc}"
@@ -76,6 +90,69 @@ def _send_pipeline_to_device(pipeline: Any, resolved_device: str) -> None:
         raise DiarizationExecutionError(
             f"Unable to move diarization pipeline to '{resolved_device}': {exc}"
         ) from exc
+
+
+def _load_audio_input(audio_path: Path) -> dict[str, Any]:
+    """Load audio explicitly so diarization does not depend on torchcodec decoding."""
+    try:
+        import av
+    except Exception as exc:
+        raise DiarizationExecutionError(
+            f"Unable to import av for diarization audio loading: {exc}"
+        ) from exc
+
+    try:
+        import torch
+    except Exception as exc:
+        raise DiarizationExecutionError(
+            f"Unable to import torch for diarization audio loading: {exc}"
+        ) from exc
+
+    try:
+        container = av.open(str(audio_path))
+    except Exception as exc:
+        raise DiarizationExecutionError(
+            f"Unable to open audio for diarization: {exc}"
+        ) from exc
+
+    try:
+        audio_stream = next(
+            (stream for stream in container.streams if stream.type == "audio"),
+            None,
+        )
+        if audio_stream is None:
+            raise DiarizationExecutionError(
+                "Unable to find an audio stream for diarization input."
+            )
+
+        sample_rate = int(audio_stream.rate or 0)
+        decoded_frames: list[numpy.ndarray] = []
+        for frame in container.decode(audio_stream):
+            frame_samples = frame.to_ndarray()
+            if frame_samples.ndim == 1:
+                frame_samples = frame_samples.reshape(1, -1)
+            decoded_frames.append(frame_samples.astype("float32", copy=False))
+            if frame.sample_rate:
+                sample_rate = int(frame.sample_rate)
+    except DiarizationExecutionError:
+        raise
+    except Exception as exc:
+        raise DiarizationExecutionError(
+            f"Unable to decode audio for diarization: {exc}"
+        ) from exc
+    finally:
+        container.close()
+
+    if not decoded_frames or sample_rate <= 0:
+        raise DiarizationExecutionError(
+            "Unable to decode any audio samples for diarization input."
+        )
+
+    waveform = torch.from_numpy(numpy.concatenate(decoded_frames, axis=1))
+    return {
+        "waveform": waveform,
+        "sample_rate": sample_rate,
+    }
 
 
 def _extract_annotation(output: Any) -> Any:
@@ -143,9 +220,10 @@ def diarize_audio(
     resolved_device = runtime_status.resolved_device
     pipeline = _get_cached_pipeline(model_id, huggingface_token)
     _send_pipeline_to_device(pipeline, resolved_device)
+    audio_input = _load_audio_input(audio_path)
 
     try:
-        output = pipeline(str(audio_path))
+        output = pipeline(audio_input)
     except Exception as exc:
         raise DiarizationExecutionError(
             f"{ENGINE_NAME} diarization failed: {exc}"

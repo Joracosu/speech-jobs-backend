@@ -35,6 +35,8 @@ The exact setup commands may evolve, but the expected workflow is:
 5. Confirm that the selected interpreter belongs to `/.venv`.
 6. Run the available validation commands before considering the work complete.
 
+For the current Windows/CUDA local target, install dependencies from `requirements.txt` as written. The file now includes the PyTorch CUDA `cu128` index and pins the matching `torch` / `torchaudio` wheels needed for the diarization stack to see the local NVIDIA GPU.
+
 When schema changes are introduced, the expected local workflow now also includes Alembic commands such as:
 
 - `alembic revision --autogenerate -m "your message"`
@@ -42,6 +44,8 @@ When schema changes are introduced, the expected local workflow now also include
 - `alembic current`
 
 Local upload validation also expects `ffprobe` to be available in `PATH`.
+
+Local diarization validation also expects `HUGGINGFACE_TOKEN` to be set and authorized for the configured `DIARIZATION_MODEL_ID`. The current default model (`pyannote/speaker-diarization-community-1`) is gated on Hugging Face and requires accepting its access conditions with the same account that owns the token.
 
 The local worker can be run with `python -m app.worker.main` or `python -m app.worker.main --once`.
 

@@ -10,6 +10,7 @@ from app.worker.runtime_checks import (
     ISSUE_CONFIG_MISSING,
     ISSUE_CUDA_UNAVAILABLE,
     ISSUE_DEPENDENCY_MISSING,
+    ISSUE_RUNTIME_ERROR,
     format_worker_runtime_report,
     get_primary_issue,
     inspect_asr_runtime,
@@ -90,6 +91,10 @@ def test_inspect_diarization_runtime_reports_missing_config_before_cuda(
         "app.worker.runtime_checks._import_pyannote_audio",
         lambda: object(),
     )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._validate_diarization_model_access",
+        lambda *args, **kwargs: None,
+    )
 
     status = inspect_diarization_runtime(
         "cuda",
@@ -116,6 +121,10 @@ def test_inspect_diarization_runtime_reports_cuda_unavailable_only_after_depende
         "app.worker.runtime_checks._import_pyannote_audio",
         lambda: object(),
     )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._validate_diarization_model_access",
+        lambda *args, **kwargs: None,
+    )
 
     status = inspect_diarization_runtime(
         "cuda",
@@ -141,6 +150,10 @@ def test_inspect_diarization_runtime_cpu_does_not_require_cuda(
     monkeypatch.setattr(
         "app.worker.runtime_checks._import_pyannote_audio",
         lambda: object(),
+    )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._validate_diarization_model_access",
+        lambda *args, **kwargs: None,
     )
 
     status = inspect_diarization_runtime(
@@ -173,6 +186,10 @@ def test_inspect_worker_runtime_requires_all_components_for_global_readiness(
         "app.worker.runtime_checks._import_pyannote_audio",
         lambda: object(),
     )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._validate_diarization_model_access",
+        lambda *args, **kwargs: None,
+    )
 
     report = inspect_worker_runtime(
         requested_device="cuda",
@@ -190,3 +207,35 @@ def test_inspect_worker_runtime_requires_all_components_for_global_readiness(
     assert "Worker runtime preflight: NOT READY" in formatted
     assert "ASR: READY" in formatted
     assert "DIARIZATION: NOT READY" in formatted
+
+
+def test_inspect_diarization_runtime_reports_inaccessible_model_as_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model access problems should be reported before CUDA readiness."""
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._import_torch",
+        lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)),
+    )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._import_pyannote_audio",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "app.worker.runtime_checks._validate_diarization_model_access",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("Diarization model 'pyannote/test-model' is not accessible with the current HUGGINGFACE_TOKEN: 403 Forbidden")
+        ),
+    )
+
+    status = inspect_diarization_runtime(
+        "cuda",
+        model_id="pyannote/test-model",
+        huggingface_token="hf-token",
+    )
+
+    assert status.ready is False
+    issue = get_primary_issue(status)
+    assert issue is not None
+    assert issue.kind == ISSUE_RUNTIME_ERROR
+    assert "not accessible" in issue.message

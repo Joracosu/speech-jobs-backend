@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Literal
+import warnings
 
 
 SUPPORTED_DEVICE_PREFERENCES = {"auto", "cpu", "cuda"}
@@ -118,7 +119,39 @@ def _import_torch() -> object:
 
 def _import_pyannote_audio() -> object:
     """Import pyannote.audio for diarization runtime checks."""
-    return import_module("pyannote.audio")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=UserWarning,
+            module=r"pyannote\.audio\.core\.io",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*torchcodec is not installed correctly so built-in audio decoding will fail.*",
+            category=UserWarning,
+        )
+        return import_module("pyannote.audio")
+
+
+def _validate_diarization_model_access(
+    model_id: str,
+    huggingface_token: str,
+) -> None:
+    """Verify that the configured diarization model is accessible."""
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+    except Exception as exc:
+        raise RuntimeError(
+            f"Diarization dependency 'huggingface_hub' is unavailable: {exc}"
+        ) from exc
+
+    model_config_url = hf_hub_url(repo_id=model_id, filename="config.yaml")
+    try:
+        get_hf_file_metadata(model_config_url, token=huggingface_token)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Diarization model '{model_id}' is not accessible with the current HUGGINGFACE_TOKEN: {exc}"
+        ) from exc
 
 
 def _get_asr_cuda_device_count(ctranslate2_module: object) -> int:
@@ -299,6 +332,20 @@ def inspect_diarization_runtime(
                 component=component,
                 kind=ISSUE_CONFIG_MISSING,
                 message="HUGGINGFACE_TOKEN is required for diarization runtime.",
+            ),
+        )
+
+    try:
+        _validate_diarization_model_access(model_id, huggingface_token)
+    except Exception as exc:
+        return _not_ready_status(
+            component=component,
+            requested_device=normalized_device,
+            resolved_device=None if normalized_device == "auto" else normalized_device,
+            issue=_runtime_issue(
+                component=component,
+                kind=ISSUE_RUNTIME_ERROR,
+                message=str(exc),
             ),
         )
 

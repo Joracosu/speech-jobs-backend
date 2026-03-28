@@ -31,7 +31,7 @@ class FakePipeline:
     def __init__(self, output: object) -> None:
         self._output = output
 
-    def __call__(self, _: str) -> object:
+    def __call__(self, _: object) -> object:
         return self._output
 
 
@@ -78,6 +78,10 @@ def test_diarize_audio_normalizes_sorts_and_discards_invalid_segments(
     monkeypatch.setattr(
         "app.worker.diarization._send_pipeline_to_device",
         lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "app.worker.diarization._load_audio_input",
+        lambda *args: {"waveform": object(), "sample_rate": 16000},
     )
 
     result = diarize_audio(
@@ -127,6 +131,10 @@ def test_diarize_audio_can_finish_successfully_with_empty_segments(
     monkeypatch.setattr(
         "app.worker.diarization._send_pipeline_to_device",
         lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "app.worker.diarization._load_audio_input",
+        lambda *args: {"waveform": object(), "sample_rate": 16000},
     )
 
     result = diarize_audio(
@@ -236,8 +244,51 @@ def test_diarize_audio_wraps_runtime_failures_as_controlled_errors(
         "app.worker.diarization._send_pipeline_to_device",
         lambda *args: None,
     )
+    monkeypatch.setattr(
+        "app.worker.diarization._load_audio_input",
+        lambda *args: {"waveform": object(), "sample_rate": 16000},
+    )
 
     with pytest.raises(DiarizationExecutionError, match="pyannote.audio diarization failed"):
+        diarize_audio(
+            audio_path=audio_path,
+            requested_device="cpu",
+            model_id="pyannote/test-model",
+            huggingface_token="hf-token",
+        )
+
+
+def test_diarize_audio_wraps_audio_loading_failures_as_controlled_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Local audio loading failures should surface as controlled diarization errors."""
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"audio")
+
+    monkeypatch.setattr(
+        "app.worker.diarization.inspect_diarization_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
+    monkeypatch.setattr(
+        "app.worker.diarization._get_cached_pipeline",
+        lambda *args: FakePipeline(object()),
+    )
+    monkeypatch.setattr(
+        "app.worker.diarization._send_pipeline_to_device",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "app.worker.diarization._load_audio_input",
+        lambda *args: (_ for _ in ()).throw(
+            DiarizationExecutionError("Unable to decode audio for diarization: boom")
+        ),
+    )
+
+    with pytest.raises(
+        DiarizationExecutionError,
+        match="Unable to decode audio for diarization",
+    ):
         diarize_audio(
             audio_path=audio_path,
             requested_device="cpu",

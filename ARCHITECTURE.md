@@ -91,7 +91,7 @@ These decisions capture backend choices already materialized in the current repo
 - Context: ASR and diarization now run through different native/runtime stacks, and recent manual validation showed that one can be ready while the other is not.
 - Decision: keep runtime device resolution and readiness checks behind a small shared worker module reused by the CLI preflight and by the ASR/diarization adapters.
 - Why this choice: it keeps diagnostics consistent with real worker behavior and avoids a parallel preflight implementation that can drift from production execution.
-- Trade-offs / what we are not doing: no public readiness endpoint and no heavyweight environment probe that loads models or downloads pipelines.
+- Trade-offs / what we are not doing: no public readiness endpoint, but the worker preflight is allowed to perform a lightweight Hugging Face access check against the configured diarization model so local readiness matches real execution more closely.
 - Interview defense: this is a backend ownership choice. The same runtime truth should drive diagnostics, execution, and tests.
 
 ---
@@ -171,7 +171,7 @@ The processing layer is responsible for:
 
 The current result model persists transcript artifacts plus `speaker_segments_json`. Successful diarization persists a JSON list, while controlled diarization failure after valid ASR preserves the transcript and stores `speaker_segments_json = None` with internal metadata describing the degraded outcome. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
 
-ASR and diarization readiness are checked separately because they use different runtime stacks. The worker preflight reuses the same device-resolution and capability-check logic as the adapters, so runtime diagnostics stay aligned with actual job execution.
+ASR and diarization readiness are checked separately because they use different runtime stacks. The worker preflight reuses the same device-resolution and capability-check logic as the adapters, so runtime diagnostics stay aligned with actual job execution. The diarization adapter also preloads audio explicitly before calling `pyannote.audio`, which avoids depending on `torchcodec`-based local file decoding during worker execution on the current Windows/CUDA target.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 

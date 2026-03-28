@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0
@@ -29,7 +31,7 @@ numpy==2.4.3
 onnxruntime==1.24.4
 packaging==26.0
 pluggy==1.6.0
-protobuf==7.34.1
+protobuf==6.33.6
 psycopg==3.3.3
 psycopg-binary==3.3.3
 pydantic==2.12.5
@@ -42,12 +44,15 @@ python-multipart==0.0.22
 pyannote.audio==4.0.4
 PyYAML==6.0.3
 rich==14.3.3
-setuptools==82.0.1
+setuptools==81.0.0
 shellingham==1.5.4
 SQLAlchemy==2.0.48
 starlette==1.0.0
 sympy==1.14.0
 tokenizers==0.22.2
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+torchcodec==0.11.0
 tqdm==4.67.3
 typer==0.24.1
 typing-inspection==0.4.2
