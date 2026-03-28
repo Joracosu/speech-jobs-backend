@@ -54,7 +54,15 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no queue broker, no distributed orchestration layer, and no extra infrastructure before real scaling pressure exists.
 - Interview defense: this keeps the stack proportional to the implemented requirements. The repository demonstrates persistence and lifecycle discipline without hiding the core design behind premature infrastructure.
 
-### 4. Small explicit API surface instead of broad feature expansion
+### 4. Separate lifecycle state from final result payload (`jobs` vs `job_results`)
+
+- Context: the worker already persists lifecycle state, failures, and completed outputs with different timing and completeness guarantees.
+- Decision: keep `jobs` focused on lifecycle and execution context, while `job_results` stores the final transcript and diarization payload only when a result is actually worth persisting.
+- Why this choice: lifecycle coordination evolves differently from final output, failed or incomplete jobs do not need partially populated result rows, and public result retrieval can read from a stable result table without overloading job state.
+- Trade-offs / what we are not doing: no single wide table that mixes claim state, terminal errors, and final payload blobs together.
+- Interview defense: this is a data-modeling choice, not just a two-table implementation detail. It keeps job coordination cleaner and makes result handling easier to explain.
+
+### 5. Small explicit API surface instead of broad feature expansion
 
 - Context: the current public backend slice is intentionally limited to health, read-side job access, and upload-driven job creation.
 - Decision: keep the API small and explicit until the core lifecycle and processing path are stable.
@@ -62,7 +70,15 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no retries, cancellation, bulk flows, artifact downloads, or result endpoint before the underlying behavior is ready.
 - Interview defense: a narrow API is a deliberate quality decision here. It lets the backend prove the important path first instead of scattering effort across partial features.
 
-### 5. Worker/lifecycle first, then speech-model integration
+### 6. Curated public result projection instead of raw persistence exposure
+
+- Context: persisted results now include internal metadata that is useful for worker behavior and debugging but is not part of the public contract.
+- Decision: expose `GET /jobs/{job_id}/result` as a curated projection over persisted data rather than returning raw `job_results` fields and internal metadata as-is.
+- Why this choice: it keeps the public contract smaller and more stable, while allowing internal persistence to stay useful and evolve without leaking runtime details.
+- Trade-offs / what we are not doing: no pass-through exposure of raw `metadata_json`, and no assumption that persistence shape must equal API shape.
+- Interview defense: public contracts and internal storage have different jobs. Keeping them separate is a normal backend design choice, not extra ceremony.
+
+### 7. Worker/lifecycle first, then speech-model integration
 
 - Context: the repository now has a completed worker/lifecycle foundation and has already integrated real ASR and internal diarization on top of it.
 - Decision: the project established upload, persistence, claim logic, lifecycle transitions, and result persistence first, and only then integrated speech models into the worker.
@@ -70,7 +86,23 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: result retrieval was exposed only after the worker/result semantics were stable, and the repository still does not try to integrate every speech-facing concern at once.
 - Interview defense: this sequence reduced risk and kept the backend story coherent. The current repo shows that the worker foundation was solved before model complexity was added.
 
-### 6. Transcription-first baseline remains valid if diarization is postponed
+### 8. Keep speech engines behind narrow worker-side adapters
+
+- Context: the worker now orchestrates real ASR and diarization, but the engine-specific runtime details live in separate worker-side modules.
+- Decision: keep `asr.py` and `diarization.py` as narrow adapter boundaries owned by the worker, while orchestration and persistence stay in the worker service layer.
+- Why this choice: it keeps engine-specific concerns contained, makes runtime checks reusable, and lets tests mock the adapter boundary instead of the real engines.
+- Trade-offs / what we are not doing: no engine-specific logic spread across API handlers or persistence code, and no direct coupling between public contracts and model libraries.
+- Interview defense: this is a small but useful boundary. It keeps orchestration readable without pretending the project needs a heavy plugin system.
+
+### 9. Preserve useful ASR output when an optional downstream diarization stage fails in a controlled way
+
+- Context: ASR can already produce a useful persisted result before diarization runs, and diarization is a downstream stage with a different runtime stack and failure profile.
+- Decision: preserve valid ASR output when controlled diarization fails, instead of turning the whole job into a full failure.
+- Why this choice: it keeps the transcription-first baseline useful and avoids discarding good output because a non-baseline downstream stage failed.
+- Trade-offs / what we are not doing: no transcript-speaker alignment fallback heuristics, and no new public lifecycle state for degraded diarization.
+- Interview defense: if the transcript is already useful, the backend should keep it. Failing the whole job would throw away value for no operational benefit.
+
+### 10. Transcription-first baseline remains valid if diarization is postponed
 
 - Context: diarization is useful for the intended v1, but it is also the most likely feature to become disproportionately costly or unstable.
 - Decision: keep a transcription-capable backend as a valid publishable baseline even if diarization lands later than planned.
@@ -78,7 +110,7 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no forced all-or-nothing delivery where diarization delays make the whole backend look incomplete.
 - Interview defense: this is controlled scope management, not feature retreat. It preserves a strong backend story while acknowledging the real cost profile of diarization.
 
-### 7. Explicit v1 exclusions as a scope-control choice
+### 11. Explicit v1 exclusions as a scope-control choice
 
 - Context: the project is meant to read as a focused backend portfolio piece, not as a broad product platform.
 - Decision: keep auth, cloud deployment, advanced observability, external queueing, and other side tracks explicitly out of v1.
@@ -86,7 +118,7 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no multi-user platform work, no cloud expansion, and no infrastructure polish that does not strengthen the core backend signal.
 - Interview defense: saying "no" is part of backend design quality. The exclusions make the repository more coherent and easier to justify in review.
 
-### 8. Runtime readiness checks stay shared between preflight and worker adapters
+### 12. Runtime readiness checks stay shared between preflight and worker adapters
 
 - Context: ASR and diarization now run through different native/runtime stacks, and recent manual validation showed that one can be ready while the other is not.
 - Decision: keep runtime device resolution and readiness checks behind a small shared worker module reused by the CLI preflight and by the ASR/diarization adapters.
@@ -331,14 +363,9 @@ At the current stage, completed results may also represent degraded diarization 
 
 ### Rationale for separate tables
 
-The split between `jobs` and `job_results` is intentional.
+The split between `jobs` and `job_results` is part of the current backend design, not an incidental schema detail.
 
-It keeps:
-
-- lifecycle state separate from output payload
-- failure handling cleaner
-- future evolution easier
-- database design more explicit
+At this stage, `jobs` remains the source of truth for lifecycle and execution context, while `job_results` carries final transcript and diarization payload only when a result is worth persisting.
 
 ---
 

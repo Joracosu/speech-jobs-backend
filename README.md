@@ -87,11 +87,25 @@ Use the worker CLI to verify runtime readiness before processing real jobs:
 - `python -m app.worker.main --preflight --device cpu`
 - `python -m app.worker.main --preflight --device cuda`
 
+The worker preflight is the recommended way to verify real runtime readiness for the local environment.
+
+Base runtime requirements:
+
+- reachable PostgreSQL database with the expected schema/migrations applied
+- local worker environment installed and able to import the configured runtime stack
+
+Optional GPU path:
+
+- only required when `cuda` is selected
+- needs a compatible local CUDA-enabled runtime for the ASR and diarization stacks you expect to use
+
+Optional diarization-enabled path:
+
+- only required when full diarization execution is expected
+- needs a valid `HUGGINGFACE_TOKEN`
+- gated diarization models or repositories may require access to be accepted in the relevant Hugging Face account before the token works
+
 The preflight checks ASR and diarization separately and reports a global `READY` state only when both components are ready for the selected device path. This matters because ASR uses the `ctranslate2` / `faster-whisper` stack, while diarization depends on `torch` / `pyannote.audio` plus the required Hugging Face token.
-
-For the current Windows/CUDA target, `requirements.txt` now pins the PyTorch CUDA wheel family through the PyTorch `cu128` index so the local worker can run ASR and diarization in the same `.venv` without a manual post-install torch step.
-
-The diarization preflight also validates that the configured `DIARIZATION_MODEL_ID` is actually accessible with the current `HUGGINGFACE_TOKEN`. For `pyannote/speaker-diarization-community-1`, that token must belong to an account that has already accepted the model access conditions on Hugging Face.
 
 When diarization succeeds, `speaker_segments_json` is persisted as a JSON list, including `[]` when normalization yields no valid segments. When ASR succeeds but diarization fails in a controlled way, the worker now still preserves the transcript, marks the job as `completed`, stores `speaker_segments_json = None`, and records the degraded diarization outcome in internal result metadata.
 
