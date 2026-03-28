@@ -76,11 +76,9 @@ def _build_completed_metadata(
     settings: Settings,
     profile: str,
     asr_result: AsrTranscriptionResult,
-    diarization_result: DiarizationResult,
 ) -> dict[str, object]:
-    """Return the final metadata payload for a completed ASR+diarization job."""
+    """Return the shared metadata payload for a completed job."""
     return {
-        "mode": "asr+diarization",
         "engine": asr_result.metadata_json["engine"],
         "profile": profile,
         "model": asr_result.metadata_json["model"],
@@ -89,10 +87,50 @@ def _build_completed_metadata(
         "compute_type": asr_result.metadata_json["compute_type"],
         "worker_id": settings.worker_id,
         "empty_transcript": asr_result.metadata_json["empty_transcript"],
+    }
+
+
+def _build_completed_metadata_with_diarization(
+    settings: Settings,
+    profile: str,
+    asr_result: AsrTranscriptionResult,
+    diarization_result: DiarizationResult,
+) -> dict[str, object]:
+    """Return the final metadata payload for a completed ASR+diarization job."""
+    return {
+        "mode": "asr+diarization",
+        **_build_completed_metadata(
+            settings=settings,
+            profile=profile,
+            asr_result=asr_result,
+        ),
+        "diarization_attempted": True,
+        "diarization_status": "completed",
         "diarization_enabled": diarization_result.metadata_json["diarization_enabled"],
         "diarization_model_id": diarization_result.metadata_json["diarization_model_id"],
         "diarization_device": diarization_result.metadata_json["diarization_device"],
         "speaker_count": diarization_result.metadata_json["speaker_count"],
+    }
+
+
+def _build_completed_metadata_with_degraded_diarization(
+    settings: Settings,
+    profile: str,
+    asr_result: AsrTranscriptionResult,
+    diarization_error_message: str,
+) -> dict[str, object]:
+    """Return the final metadata payload for a completed ASR result with degraded diarization."""
+    return {
+        "mode": "asr",
+        **_build_completed_metadata(
+            settings=settings,
+            profile=profile,
+            asr_result=asr_result,
+        ),
+        "diarization_attempted": True,
+        "diarization_status": "failed",
+        "diarization_error_code": "diarization_error",
+        "diarization_error_message": diarization_error_message,
     }
 
 
@@ -133,11 +171,13 @@ def _load_claimed_job_context(
 def _persist_completed_job(
     session_factory: sessionmaker[Session],
     job_id: int,
-    settings: Settings,
-    asr_result: AsrTranscriptionResult,
-    diarization_result: DiarizationResult,
+    transcript_text: str,
+    transcript_json: dict[str, object],
+    speaker_segments_json: list[dict[str, object]] | None,
+    detected_language: str | None,
+    metadata_json: dict[str, object],
 ) -> None:
-    """Persist the completed ASR+diarization result and terminal state atomically."""
+    """Persist the completed job result and terminal state atomically."""
     with session_factory() as session, session.begin():
         job = session.get(Job, job_id)
         if job is None:
@@ -151,16 +191,11 @@ def _persist_completed_job(
             return
 
         job.result = JobResult(
-            transcript_text=asr_result.transcript_text,
-            transcript_json=asr_result.transcript_json,
-            speaker_segments_json=diarization_result.speaker_segments_json,
-            detected_language=asr_result.detected_language,
-            metadata_json=_build_completed_metadata(
-                settings=settings,
-                profile=job.profile_selected,
-                asr_result=asr_result,
-                diarization_result=diarization_result,
-            ),
+            transcript_text=transcript_text,
+            transcript_json=transcript_json,
+            speaker_segments_json=speaker_segments_json,
+            detected_language=detected_language,
+            metadata_json=metadata_json,
         )
         job.status = JobStatus.COMPLETED
         job.completed_at = utcnow()
@@ -197,33 +232,12 @@ def process_claimed_job(
             job_context.requested_device,
             asr_result.metadata_json["resolved_device"],
         )
-        diarization_result = diarize_audio(
-            audio_path=job_context.input_path,
-            requested_device=job_context.requested_device,
-            model_id=settings.diarization_model_id,
-            huggingface_token=settings.huggingface_token,
-        )
-        LOGGER.info(
-            "Diarization runtime ready for job id=%s requested_device=%s resolved_device=%s",
-            job_id,
-            job_context.requested_device,
-            diarization_result.metadata_json["diarization_device"],
-        )
     except AsrExecutionError as exc:
         LOGGER.warning("ASR failed for job id=%s: %s", job_id, exc)
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="asr_error",
-            error_message=str(exc),
-        )
-        return
-    except DiarizationExecutionError as exc:
-        LOGGER.warning("Diarization failed for job id=%s: %s", job_id, exc)
-        _mark_job_failed(
-            session_factory=session_factory,
-            job_id=job_id,
-            error_code="diarization_error",
             error_message=str(exc),
         )
         return
@@ -238,14 +252,66 @@ def process_claimed_job(
         return
 
     try:
-        _persist_completed_job(
+        diarization_result = diarize_audio(
+            audio_path=job_context.input_path,
+            requested_device=job_context.requested_device,
+            model_id=settings.diarization_model_id,
+            huggingface_token=settings.huggingface_token,
+        )
+        LOGGER.info(
+            "Diarization runtime ready for job id=%s requested_device=%s resolved_device=%s",
+            job_id,
+            job_context.requested_device,
+            diarization_result.metadata_json["diarization_device"],
+        )
+    except DiarizationExecutionError as exc:
+        LOGGER.warning(
+            "Diarization failed for job id=%s, preserving ASR result: %s",
+            job_id,
+            exc,
+        )
+        speaker_segments_json: list[dict[str, object]] | None = None
+        metadata_json = _build_completed_metadata_with_degraded_diarization(
+            settings=settings,
+            profile=job_context.profile,
+            asr_result=asr_result,
+            diarization_error_message=str(exc),
+        )
+    except Exception as exc:
+        LOGGER.warning("Unexpected diarization processing failed for job id=%s: %s", job_id, exc)
+        _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
+            error_code="processing_error",
+            error_message=f"Worker processing failed: {exc}",
+        )
+        return
+    else:
+        speaker_segments_json = [
+            dict(segment) for segment in diarization_result.speaker_segments_json
+        ]
+        metadata_json = _build_completed_metadata_with_diarization(
             settings=settings,
+            profile=job_context.profile,
             asr_result=asr_result,
             diarization_result=diarization_result,
         )
-        LOGGER.info("Completed job id=%s successfully.", job_id)
+
+    try:
+        _persist_completed_job(
+            session_factory=session_factory,
+            job_id=job_id,
+            transcript_text=asr_result.transcript_text,
+            transcript_json=asr_result.transcript_json,
+            speaker_segments_json=speaker_segments_json,
+            detected_language=asr_result.detected_language,
+            metadata_json=metadata_json,
+        )
+        LOGGER.info(
+            "Completed job id=%s successfully with diarization_status=%s.",
+            job_id,
+            metadata_json["diarization_status"],
+        )
     except Exception as exc:
         LOGGER.warning("Failed to persist result for job id=%s: %s", job_id, exc)
         _mark_job_failed(

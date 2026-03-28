@@ -162,6 +162,8 @@ def test_run_worker_once_completes_pending_job_and_persists_asr_result(
             "compute_type": "int8",
             "worker_id": "local-worker-1",
             "empty_transcript": False,
+            "diarization_attempted": True,
+            "diarization_status": "completed",
             "diarization_enabled": True,
             "diarization_model_id": "pyannote/test-model",
             "diarization_device": "cpu",
@@ -242,6 +244,8 @@ def test_run_worker_once_persists_empty_speaker_segments_on_success(
         )
         assert persisted_result is not None
         assert persisted_result.speaker_segments_json == []
+        assert persisted_result.metadata_json["diarization_attempted"] is True
+        assert persisted_result.metadata_json["diarization_status"] == "completed"
         assert persisted_result.metadata_json["speaker_count"] == 0
 
 
@@ -339,12 +343,12 @@ def test_run_worker_once_marks_job_failed_on_asr_error(
         ) is None
 
 
-def test_run_worker_once_marks_job_failed_on_diarization_error(
+def test_run_worker_once_completes_job_with_degraded_result_on_diarization_error(
     session_factory: sessionmaker[Session],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worker should persist a clean failed state when diarization execution fails."""
+    """Worker should preserve a valid ASR result when diarization fails in a controlled way."""
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"real-audio-bytes")
 
@@ -401,41 +405,60 @@ def test_run_worker_once_marks_job_failed_on_diarization_error(
     with session_factory() as session:
         persisted_job = session.get(Job, job_id)
         assert persisted_job is not None
-        assert persisted_job.status == JobStatus.FAILED
-        assert persisted_job.error_code == "diarization_error"
-        assert persisted_job.error_message == "pyannote.audio diarization failed"
-        assert session.scalar(
+        assert persisted_job.status == JobStatus.COMPLETED
+        assert persisted_job.error_code is None
+        assert persisted_job.error_message is None
+
+        persisted_result = session.scalar(
             select(JobResult).where(JobResult.job_id == job_id)
-        ) is None
+        )
+        assert persisted_result is not None
+        assert persisted_result.transcript_text == "hello world"
+        assert persisted_result.speaker_segments_json is None
+        assert persisted_result.metadata_json == {
+            "mode": "asr",
+            "engine": "faster-whisper",
+            "profile": "balanced",
+            "model": "small",
+            "requested_device": "auto",
+            "resolved_device": "cpu",
+            "compute_type": "int8",
+            "worker_id": "local-worker-1",
+            "empty_transcript": False,
+            "diarization_attempted": True,
+            "diarization_status": "failed",
+            "diarization_error_code": "diarization_error",
+            "diarization_error_message": "pyannote.audio diarization failed",
+        }
 
 
-def test_run_worker_once_persists_specific_runtime_diagnostic_messages(
+def test_run_worker_once_preserves_empty_valid_asr_result_when_diarization_fails(
     session_factory: sessionmaker[Session],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Specific runtime diagnostics should survive the worker lifecycle unchanged."""
+    """A valid empty ASR result should still survive controlled diarization degradation."""
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"real-audio-bytes")
 
     monkeypatch.setattr(
         "app.worker.service.transcribe_audio",
         lambda **_: AsrTranscriptionResult(
-            transcript_text="hello world",
+            transcript_text="",
             transcript_json={
-                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
-                "language": "en",
+                "segments": [],
+                "language": None,
                 "engine": "faster-whisper",
                 "model": "small",
             },
-            detected_language="en",
+            detected_language=None,
             metadata_json={
                 "engine": "faster-whisper",
                 "model": "small",
-                "requested_device": "cuda",
-                "resolved_device": "cuda",
-                "compute_type": "float16",
-                "empty_transcript": False,
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": True,
             },
         ),
     )
@@ -458,9 +481,102 @@ def test_run_worker_once_persists_specific_runtime_diagnostic_messages(
             input_sha256="de" * 32,
             file_size_bytes=input_path.stat().st_size,
             media_duration_seconds=None,
-            device_used="cuda",
+            device_used="auto",
             profile_selected="balanced",
-            config_snapshot={"profile": "balanced", "device_preference": "cuda"},
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.COMPLETED
+        assert persisted_job.error_code is None
+        assert persisted_job.error_message is None
+
+        persisted_result = session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        )
+        assert persisted_result is not None
+        assert persisted_result.transcript_text == ""
+        assert persisted_result.transcript_json["segments"] == []
+        assert persisted_result.detected_language is None
+        assert persisted_result.speaker_segments_json is None
+        assert persisted_result.metadata_json == {
+            "mode": "asr",
+            "engine": "faster-whisper",
+            "profile": "balanced",
+            "model": "small",
+            "requested_device": "auto",
+            "resolved_device": "cpu",
+            "compute_type": "int8",
+            "worker_id": "local-worker-1",
+            "empty_transcript": True,
+            "diarization_attempted": True,
+            "diarization_status": "failed",
+            "diarization_error_code": "diarization_error",
+            "diarization_error_message": diagnostic_message,
+        }
+
+
+def test_run_worker_once_marks_job_failed_when_completed_result_persistence_fails(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistence failures must remain terminal even after a valid ASR result exists."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            DiarizationExecutionError("pyannote.audio diarization failed")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service._persist_completed_job",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("db write boom")),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="df" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
             error_code=None,
             error_message=None,
         )
@@ -474,8 +590,10 @@ def test_run_worker_once_persists_specific_runtime_diagnostic_messages(
         persisted_job = session.get(Job, job_id)
         assert persisted_job is not None
         assert persisted_job.status == JobStatus.FAILED
-        assert persisted_job.error_code == "diarization_error"
-        assert persisted_job.error_message == diagnostic_message
+        assert persisted_job.error_code == "processing_error"
+        assert persisted_job.error_message == (
+            "Failed to persist processing result: db write boom"
+        )
         assert session.scalar(
             select(JobResult).where(JobResult.job_id == job_id)
         ) is None

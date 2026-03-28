@@ -169,7 +169,7 @@ The processing layer is responsible for:
 - collecting processing metadata
 - exposing a worker-side preflight path that checks ASR and diarization runtime readiness without processing a job
 
-The current result model persists transcript artifacts plus `speaker_segments_json`. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
+The current result model persists transcript artifacts plus `speaker_segments_json`. Successful diarization persists a JSON list, while controlled diarization failure after valid ASR preserves the transcript and stores `speaker_segments_json = None` with internal metadata describing the degraded outcome. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
 
 ASR and diarization readiness are checked separately because they use different runtime stacks. The worker preflight reuses the same device-resolution and capability-check logic as the adapters, so runtime diagnostics stay aligned with actual job execution.
 
@@ -194,10 +194,11 @@ The processing layer must be isolated from the API layer and remain callable fro
 3. The worker updates the job to `running`.
 4. The worker loads the file from storage.
 5. The worker runs ASR transcription.
-6. The worker runs speaker diarization.
-7. The worker stores transcript and speaker-segment artifacts in `job_results`.
-8. The worker marks the job as `completed`.
-9. If a failure occurs, the worker marks the job as `failed` and stores error details.
+6. If ASR fails or the input is broken, the worker marks the job as `failed`.
+7. If ASR succeeds, the worker attempts speaker diarization.
+8. If diarization succeeds, the worker stores transcript plus speaker-segment artifacts in `job_results` and marks the job as `completed`.
+9. If diarization fails in a controlled way after valid ASR, the worker still stores the transcript in `job_results`, keeps `speaker_segments_json = None`, records the degraded diarization outcome in metadata, and marks the job as `completed`.
+10. Unexpected processing or persistence failures remain terminal and are stored as `failed`.
 
 ### Retrieval
 
@@ -325,6 +326,7 @@ Planned fields include:
 - `metadata_json`
 
 At the current stage, `job_results` persists transcript output and speaker segments internally even though a public result retrieval endpoint is still pending.
+At the current stage, completed results may also represent degraded diarization outcomes internally: transcript is still persisted, while `speaker_segments_json` is `None` and metadata records that diarization was attempted but failed.
 
 ### Rationale for separate tables
 
