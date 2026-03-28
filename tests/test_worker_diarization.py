@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.worker.diarization import DiarizationExecutionError, diarize_audio
+from app.worker.runtime_checks import ComponentRuntimeStatus, RuntimeIssue
 
 
 class FakeAnnotation:
@@ -34,6 +35,17 @@ class FakePipeline:
         return self._output
 
 
+def _ready_runtime_status(requested_device: str, resolved_device: str) -> ComponentRuntimeStatus:
+    """Build a ready diarization runtime status for adapter tests."""
+    return ComponentRuntimeStatus(
+        component="diarization",
+        requested_device=requested_device,
+        resolved_device=resolved_device,
+        ready=True,
+        issues=(),
+    )
+
+
 def test_diarize_audio_normalizes_sorts_and_discards_invalid_segments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -55,7 +67,10 @@ def test_diarize_audio_normalizes_sorts_and_discards_invalid_segments(
         SimpleNamespace(speaker_diarization=annotation)
     )
 
-    monkeypatch.setattr("app.worker.diarization._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.diarization.inspect_diarization_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr(
         "app.worker.diarization._get_cached_pipeline",
         lambda *args: fake_pipeline,
@@ -101,7 +116,10 @@ def test_diarize_audio_can_finish_successfully_with_empty_segments(
     )
     fake_pipeline = FakePipeline(annotation)
 
-    monkeypatch.setattr("app.worker.diarization._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.diarization.inspect_diarization_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr(
         "app.worker.diarization._get_cached_pipeline",
         lambda *args: fake_pipeline,
@@ -127,12 +145,70 @@ def test_diarize_audio_requires_huggingface_token(tmp_path: Path) -> None:
     audio_path = tmp_path / "input.wav"
     audio_path.write_bytes(b"audio")
 
-    with pytest.raises(DiarizationExecutionError, match="HUGGINGFACE_TOKEN"):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "app.worker.diarization.inspect_diarization_runtime",
+            lambda *args, **kwargs: ComponentRuntimeStatus(
+                component="diarization",
+                requested_device="cpu",
+                resolved_device="cpu",
+                ready=False,
+                issues=(
+                    RuntimeIssue(
+                        component="diarization",
+                        kind="config_missing",
+                        message="HUGGINGFACE_TOKEN is required for diarization runtime.",
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(
+            DiarizationExecutionError,
+            match="HUGGINGFACE_TOKEN is required for diarization runtime",
+        ):
+            diarize_audio(
+                audio_path=audio_path,
+                requested_device="cpu",
+                model_id="pyannote/test-model",
+                huggingface_token=None,
+            )
+
+
+def test_diarize_audio_uses_shared_runtime_issue_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Dependency issues should surface before any CUDA availability diagnosis."""
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"audio")
+
+    monkeypatch.setattr(
+        "app.worker.diarization.inspect_diarization_runtime",
+        lambda *args, **kwargs: ComponentRuntimeStatus(
+            component="diarization",
+            requested_device="cuda",
+            resolved_device="cuda",
+            ready=False,
+            issues=(
+                RuntimeIssue(
+                    component="diarization",
+                    kind="dependency_missing",
+                    message="Diarization dependency 'torch' is unavailable: No module named 'torch'",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        DiarizationExecutionError,
+        match="Diarization dependency 'torch' is unavailable",
+    ):
         diarize_audio(
             audio_path=audio_path,
-            requested_device="cpu",
+            requested_device="cuda",
             model_id="pyannote/test-model",
-            huggingface_token=None,
+            huggingface_token="hf-token",
         )
 
 
@@ -148,7 +224,10 @@ def test_diarize_audio_wraps_runtime_failures_as_controlled_errors(
         def __call__(self, _: str) -> object:
             raise RuntimeError("diarization boom")
 
-    monkeypatch.setattr("app.worker.diarization._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.diarization.inspect_diarization_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr(
         "app.worker.diarization._get_cached_pipeline",
         lambda *args: BrokenPipeline(),

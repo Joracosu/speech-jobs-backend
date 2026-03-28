@@ -8,7 +8,7 @@ This project is being built as a professional backend portfolio piece. The main 
 
 Active development.
 
-The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a dedicated worker that runs real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`, persisting transcript and speaker segments in `JobResult`. Public result retrieval is still pending, and no result endpoint is exposed yet.
+The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a dedicated worker that runs real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`, persisting transcript and speaker segments in `JobResult`. The worker now also exposes a CLI preflight to verify runtime readiness before real jobs run. Public result retrieval is still pending, and no result endpoint is exposed yet.
 
 ## v1 Goals
 
@@ -78,6 +78,18 @@ The repository will progressively include:
 This repository follows an incremental development approach with small, stable, reviewable steps.
 
 Implementation details, coding rules, architectural decisions, milestones, and execution planning are documented in dedicated project files inside the repository.
+
+## Worker Runtime Preflight
+
+Use the worker CLI to verify runtime readiness before processing real jobs:
+
+- `python -m app.worker.main --preflight`
+- `python -m app.worker.main --preflight --device cpu`
+- `python -m app.worker.main --preflight --device cuda`
+
+The preflight checks ASR and diarization separately and reports a global `READY` state only when both components are ready for the selected device path. This matters because ASR uses the `ctranslate2` / `faster-whisper` stack, while diarization depends on `torch` / `pyannote.audio` plus the required Hugging Face token.
+
+This run improves diagnostics and operability only. It does not change the current job semantics: if diarization fails during a real job, the job still ends in `failed`.
 
 ## Demo Audio Sources
 

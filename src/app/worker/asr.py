@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from app.worker.runtime_checks import get_primary_issue, inspect_asr_runtime
+
 
 LANGUAGE_PROBABILITY_THRESHOLD = 0.5
 PROFILE_TO_MODEL = {
@@ -30,42 +32,12 @@ class AsrTranscriptionResult:
     detected_language: str | None
     metadata_json: dict[str, Any]
 
-
-def _has_cuda_available() -> bool:
-    """Return whether CUDA is available to the ASR runtime."""
-    try:
-        import ctranslate2
-    except Exception:
-        return False
-    return ctranslate2.get_cuda_device_count() > 0
-
-
 def _resolve_model_name(profile: str) -> str:
     """Return the model name for the public processing profile."""
     try:
         return PROFILE_TO_MODEL[profile]
     except KeyError as exc:
-        raise AsrExecutionError(
-            f"Unsupported ASR profile '{profile}'."
-        ) from exc
-
-
-def _resolve_device(requested_device: str) -> str:
-    """Resolve the effective runtime device from the public preference."""
-    if requested_device == "auto":
-        return "cuda" if _has_cuda_available() else "cpu"
-    if requested_device == "cpu":
-        return "cpu"
-    if requested_device == "cuda":
-        if not _has_cuda_available():
-            raise AsrExecutionError(
-                "CUDA was requested explicitly, but no CUDA device is available."
-            )
-        return "cuda"
-
-    raise AsrExecutionError(
-        f"Unsupported ASR device preference '{requested_device}'."
-    )
+        raise AsrExecutionError(f"Unsupported ASR profile '{profile}'.") from exc
 
 
 def _resolve_compute_type(resolved_device: str) -> str:
@@ -183,7 +155,16 @@ def transcribe_audio(
 ) -> AsrTranscriptionResult:
     """Run ASR and return a normalized transcription result."""
     model_name = _resolve_model_name(profile)
-    resolved_device = _resolve_device(requested_device)
+    runtime_status = inspect_asr_runtime(requested_device)
+    if not runtime_status.ready or runtime_status.resolved_device is None:
+        issue = get_primary_issue(runtime_status)
+        message = issue.message if issue is not None else "ASR runtime is not ready."
+        raise AsrExecutionError(
+            f"{message} Run 'python -m app.worker.main --preflight --device {requested_device}' "
+            "to verify worker runtime readiness."
+        )
+
+    resolved_device = runtime_status.resolved_device
     compute_type = _resolve_compute_type(resolved_device)
     model = _get_cached_model(model_name, resolved_device, compute_type)
 

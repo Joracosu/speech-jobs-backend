@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from time import sleep
@@ -17,6 +18,9 @@ from app.worker.diarization import (
     DiarizationResult,
     diarize_audio,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None:
@@ -175,10 +179,23 @@ def process_claimed_job(
         if job_context is None:
             return
 
+        LOGGER.info(
+            "Processing claimed job id=%s requested_device=%s profile=%s",
+            job_id,
+            job_context.requested_device,
+            job_context.profile,
+        )
+
         asr_result = transcribe_audio(
             audio_path=job_context.input_path,
             profile=job_context.profile,
             requested_device=job_context.requested_device,
+        )
+        LOGGER.info(
+            "ASR runtime ready for job id=%s requested_device=%s resolved_device=%s",
+            job_id,
+            job_context.requested_device,
+            asr_result.metadata_json["resolved_device"],
         )
         diarization_result = diarize_audio(
             audio_path=job_context.input_path,
@@ -186,7 +203,14 @@ def process_claimed_job(
             model_id=settings.diarization_model_id,
             huggingface_token=settings.huggingface_token,
         )
+        LOGGER.info(
+            "Diarization runtime ready for job id=%s requested_device=%s resolved_device=%s",
+            job_id,
+            job_context.requested_device,
+            diarization_result.metadata_json["diarization_device"],
+        )
     except AsrExecutionError as exc:
+        LOGGER.warning("ASR failed for job id=%s: %s", job_id, exc)
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
@@ -195,6 +219,7 @@ def process_claimed_job(
         )
         return
     except DiarizationExecutionError as exc:
+        LOGGER.warning("Diarization failed for job id=%s: %s", job_id, exc)
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
@@ -203,6 +228,7 @@ def process_claimed_job(
         )
         return
     except Exception as exc:
+        LOGGER.warning("Worker processing failed for job id=%s: %s", job_id, exc)
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
@@ -219,7 +245,9 @@ def process_claimed_job(
             asr_result=asr_result,
             diarization_result=diarization_result,
         )
+        LOGGER.info("Completed job id=%s successfully.", job_id)
     except Exception as exc:
+        LOGGER.warning("Failed to persist result for job id=%s: %s", job_id, exc)
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,

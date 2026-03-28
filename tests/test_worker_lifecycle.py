@@ -409,6 +409,78 @@ def test_run_worker_once_marks_job_failed_on_diarization_error(
         ) is None
 
 
+def test_run_worker_once_persists_specific_runtime_diagnostic_messages(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Specific runtime diagnostics should survive the worker lifecycle unchanged."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "cuda",
+                "resolved_device": "cuda",
+                "compute_type": "float16",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    diagnostic_message = (
+        "Diarization dependency 'torch' is unavailable: No module named 'torch'. "
+        "Run 'python -m app.worker.main --preflight --device cuda' to verify worker runtime readiness."
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            DiarizationExecutionError(diagnostic_message)
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="de" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="cuda",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "cuda"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.FAILED
+        assert persisted_job.error_code == "diarization_error"
+        assert persisted_job.error_message == diagnostic_message
+        assert session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        ) is None
+
+
 def test_run_worker_once_fails_when_job_already_has_a_result(
     session_factory: sessionmaker[Session],
     tmp_path: Path,

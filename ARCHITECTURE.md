@@ -86,6 +86,14 @@ These decisions capture backend choices already materialized in the current repo
 - Trade-offs / what we are not doing: no multi-user platform work, no cloud expansion, and no infrastructure polish that does not strengthen the core backend signal.
 - Interview defense: saying "no" is part of backend design quality. The exclusions make the repository more coherent and easier to justify in review.
 
+### 8. Runtime readiness checks stay shared between preflight and worker adapters
+
+- Context: ASR and diarization now run through different native/runtime stacks, and recent manual validation showed that one can be ready while the other is not.
+- Decision: keep runtime device resolution and readiness checks behind a small shared worker module reused by the CLI preflight and by the ASR/diarization adapters.
+- Why this choice: it keeps diagnostics consistent with real worker behavior and avoids a parallel preflight implementation that can drift from production execution.
+- Trade-offs / what we are not doing: no public readiness endpoint and no heavyweight environment probe that loads models or downloads pipelines.
+- Interview defense: this is a backend ownership choice. The same runtime truth should drive diagnostics, execution, and tests.
+
 ---
 
 ## Core Components
@@ -159,8 +167,11 @@ The processing layer is responsible for:
 - running diarization after successful ASR
 - assembling transcript and speaker segmentation as parallel persisted artifacts
 - collecting processing metadata
+- exposing a worker-side preflight path that checks ASR and diarization runtime readiness without processing a job
 
 The current result model persists transcript artifacts plus `speaker_segments_json`. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
+
+ASR and diarization readiness are checked separately because they use different runtime stacks. The worker preflight reuses the same device-resolution and capability-check logic as the adapters, so runtime diagnostics stay aligned with actual job execution.
 
 The processing layer must be isolated from the API layer and remain callable from the worker only.
 
@@ -244,6 +255,22 @@ The claim flow should ensure:
 - state transition to `running` is atomic
 - duplicate processing is avoided
 - the claim mechanism remains compatible with future multi-worker expansion
+
+### Preflight mode
+
+The worker now exposes a CLI-only preflight mode:
+
+- `python -m app.worker.main --preflight`
+- `python -m app.worker.main --preflight --device auto|cpu|cuda`
+
+This mode must:
+
+- run before any job claim or DB session creation
+- report ASR and diarization readiness separately
+- report the requested and resolved device path per component
+- return a nonzero exit code when the selected runtime path is not ready
+
+Global `READY` means both ASR and diarization are ready for the selected device path. For `cpu`, missing CUDA is not blocking. For `cuda`, both runtimes must be CUDA-ready. For `auto`, each component resolves its effective device using the same logic as real worker execution.
 
 ### Visible lifecycle states
 
@@ -428,6 +455,7 @@ Minimum expected logging behavior:
 
 - log job creation
 - log worker claim/start
+- log runtime resolution for ASR and diarization when processing starts
 - log processing completion
 - log failures with job context
 - include `job_id` in relevant log lines

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.worker.runtime_checks import get_primary_issue, inspect_diarization_runtime
+
 
 ENGINE_NAME = "pyannote.audio"
 _PIPELINE_CACHE: dict[str, Any] = {}
@@ -21,33 +23,6 @@ class DiarizationResult:
 
     speaker_segments_json: list[dict[str, str | float]]
     metadata_json: dict[str, Any]
-
-
-def _has_cuda_available() -> bool:
-    """Return whether CUDA is available to the diarization runtime."""
-    try:
-        import torch
-    except Exception:
-        return False
-    return bool(torch.cuda.is_available())
-
-
-def _resolve_device(requested_device: str) -> str:
-    """Resolve the effective runtime device from the public preference."""
-    if requested_device == "auto":
-        return "cuda" if _has_cuda_available() else "cpu"
-    if requested_device == "cpu":
-        return "cpu"
-    if requested_device == "cuda":
-        if not _has_cuda_available():
-            raise DiarizationExecutionError(
-                "CUDA was requested explicitly for diarization, but no CUDA device is available."
-            )
-        return "cuda"
-
-    raise DiarizationExecutionError(
-        f"Unsupported diarization device preference '{requested_device}'."
-    )
 
 
 def _load_pipeline(model_id: str, huggingface_token: str) -> Any:
@@ -148,12 +123,24 @@ def diarize_audio(
     huggingface_token: str | None,
 ) -> DiarizationResult:
     """Run diarization and return a normalized speaker-segment result."""
-    if not huggingface_token:
+    runtime_status = inspect_diarization_runtime(
+        requested_device,
+        model_id=model_id,
+        huggingface_token=huggingface_token,
+    )
+    if not runtime_status.ready or runtime_status.resolved_device is None:
+        issue = get_primary_issue(runtime_status)
+        message = (
+            issue.message
+            if issue is not None
+            else "Diarization runtime is not ready."
+        )
         raise DiarizationExecutionError(
-            f"HUGGINGFACE_TOKEN is required to load diarization pipeline '{model_id}'."
+            f"{message} Run 'python -m app.worker.main --preflight --device {requested_device}' "
+            "to verify worker runtime readiness."
         )
 
-    resolved_device = _resolve_device(requested_device)
+    resolved_device = runtime_status.resolved_device
     pipeline = _get_cached_pipeline(model_id, huggingface_token)
     _send_pipeline_to_device(pipeline, resolved_device)
 

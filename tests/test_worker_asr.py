@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.worker.asr import AsrExecutionError, transcribe_audio
+from app.worker.runtime_checks import ComponentRuntimeStatus
 
 
 class FakeWhisperModel:
@@ -20,6 +21,17 @@ class FakeWhisperModel:
     def transcribe(self, _: str, task: str = "transcribe") -> tuple[list[SimpleNamespace], SimpleNamespace]:
         assert task == "transcribe"
         return self._segments, self._info
+
+
+def _ready_runtime_status(requested_device: str, resolved_device: str) -> ComponentRuntimeStatus:
+    """Build a ready ASR runtime status for adapter tests."""
+    return ComponentRuntimeStatus(
+        component="asr",
+        requested_device=requested_device,
+        resolved_device=resolved_device,
+        ready=True,
+        issues=(),
+    )
 
 
 def test_transcribe_audio_orders_segments_and_builds_deterministic_text(
@@ -39,7 +51,10 @@ def test_transcribe_audio_orders_segments_and_builds_deterministic_text(
         info=SimpleNamespace(language="en", language_probability=0.9),
     )
 
-    monkeypatch.setattr("app.worker.asr._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.asr.inspect_asr_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr("app.worker.asr._get_cached_model", lambda *args: fake_model)
 
     result = transcribe_audio(audio_path, profile="balanced", requested_device="cpu")
@@ -60,7 +75,10 @@ def test_transcribe_audio_keeps_language_fields_consistent(
     audio_path = tmp_path / "input.wav"
     audio_path.write_bytes(b"audio")
 
-    monkeypatch.setattr("app.worker.asr._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.asr.inspect_asr_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
 
     reliable_model = FakeWhisperModel(
         segments=[SimpleNamespace(id=0, start=0.0, end=1.0, text="hello")],
@@ -107,7 +125,10 @@ def test_transcribe_audio_discards_invalid_segments_and_can_finish_empty(
         info=SimpleNamespace(language=None, language_probability=None),
     )
 
-    monkeypatch.setattr("app.worker.asr._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.asr.inspect_asr_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr("app.worker.asr._get_cached_model", lambda *args: fake_model)
 
     result = transcribe_audio(audio_path, profile="fast", requested_device="cpu")
@@ -130,7 +151,10 @@ def test_transcribe_audio_wraps_runtime_failures_as_asr_execution_error(
         def transcribe(self, *_: object, **__: object) -> None:
             raise RuntimeError("runtime boom")
 
-    monkeypatch.setattr("app.worker.asr._has_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        "app.worker.asr.inspect_asr_runtime",
+        lambda *args, **kwargs: _ready_runtime_status("cpu", "cpu"),
+    )
     monkeypatch.setattr("app.worker.asr._get_cached_model", lambda *args: BrokenModel())
 
     with pytest.raises(AsrExecutionError, match="faster-whisper transcription failed"):
