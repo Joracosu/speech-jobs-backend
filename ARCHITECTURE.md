@@ -67,7 +67,7 @@ These decisions capture backend choices already materialized in the current repo
 - Context: the repository now has a completed worker/lifecycle foundation and has already integrated real ASR and internal diarization on top of it.
 - Decision: the project established upload, persistence, claim logic, lifecycle transitions, and result persistence first, and only then integrated speech models into the worker.
 - Why this choice: it isolated infrastructure and state-management problems from model-integration problems, which made ASR and diarization easier to add cleanly.
-- Trade-offs / what we are not doing: public result retrieval still remains later work, and the repository did not try to integrate every speech-facing concern at once.
+- Trade-offs / what we are not doing: result retrieval was exposed only after the worker/result semantics were stable, and the repository still does not try to integrate every speech-facing concern at once.
 - Interview defense: this sequence reduced risk and kept the backend story coherent. The current repo shows that the worker foundation was solved before model complexity was added.
 
 ### 6. Transcription-first baseline remains valid if diarization is postponed
@@ -169,7 +169,7 @@ The processing layer is responsible for:
 - collecting processing metadata
 - exposing a worker-side preflight path that checks ASR and diarization runtime readiness without processing a job
 
-The current result model persists transcript artifacts plus `speaker_segments_json`. Successful diarization persists a JSON list, while controlled diarization failure after valid ASR preserves the transcript and stores `speaker_segments_json = None` with internal metadata describing the degraded outcome. Public result retrieval is still pending, and this step does not add transcript-speaker alignment heuristics.
+The current result model persists transcript artifacts plus `speaker_segments_json`. Successful diarization persists a JSON list, while controlled diarization failure after valid ASR preserves the transcript and stores `speaker_segments_json = None` with internal metadata describing the degraded outcome. The API now exposes a curated public result projection through `GET /jobs/{job_id}/result`, without exposing raw `metadata_json`, and this step still does not add transcript-speaker alignment heuristics.
 
 ASR and diarization readiness are checked separately because they use different runtime stacks. The worker preflight reuses the same device-resolution and capability-check logic as the adapters, so runtime diagnostics stay aligned with actual job execution. The diarization adapter also preloads audio explicitly before calling `pyannote.audio`, which avoids depending on `torchcodec`-based local file decoding during worker execution on the current Windows/CUDA target.
 
@@ -205,7 +205,8 @@ The processing layer must be isolated from the API layer and remain callable fro
 1. A client requests job status through the API.
 2. The API reads the job record from the database.
 3. Completed jobs may already have a persisted internal result in `job_results`.
-4. Public result retrieval remains part of the planned API surface, but the endpoint is not implemented yet.
+4. `GET /jobs/{job_id}/result` returns `404` when the job does not exist, `409` when no public result is available yet, and `200` when a persisted `JobResult` exists.
+5. The public result is a curated projection: transcript text, curated transcript structure, speaker segments, language, and limited diarization outcome fields are exposed, while raw `metadata_json` and internal runtime fields remain internal.
 
 ---
 
@@ -219,7 +220,7 @@ The initial API surface is intentionally small.
 - `POST /jobs/upload`
 - `GET /jobs`
 - `GET /jobs/{job_id}`
-- planned next: `GET /jobs/{job_id}/result`
+- `GET /jobs/{job_id}/result`
 
 ### Not included in v1
 
@@ -325,8 +326,8 @@ Planned fields include:
 - `detected_language` (nullable)
 - `metadata_json`
 
-At the current stage, `job_results` persists transcript output and speaker segments internally even though a public result retrieval endpoint is still pending.
-At the current stage, completed results may also represent degraded diarization outcomes internally: transcript is still persisted, while `speaker_segments_json` is `None` and metadata records that diarization was attempted but failed.
+At the current stage, `job_results` persists transcript output and speaker segments internally, and the API exposes a curated public result projection from that data.
+At the current stage, completed results may also represent degraded diarization outcomes internally: transcript is still persisted, while `speaker_segments_json` is `None` and metadata records that diarization was attempted but failed. Public result retrieval preserves that distinction as `speaker_segments_json = null` without exposing raw internal error metadata.
 
 ### Rationale for separate tables
 

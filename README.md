@@ -8,7 +8,7 @@ This project is being built as a professional backend portfolio piece. The main 
 
 Active development.
 
-The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a dedicated worker that runs real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`, persisting transcript and speaker segments in `JobResult`. The worker also exposes a CLI preflight to verify runtime readiness before real jobs run. Public result retrieval is still pending, and no result endpoint is exposed yet.
+The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, `GET /jobs/{job_id}/result`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a dedicated worker that runs real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`, persisting transcript and speaker segments in `JobResult`. The worker also exposes a CLI preflight to verify runtime readiness before real jobs run.
 
 ## v1 Goals
 
@@ -94,6 +94,31 @@ For the current Windows/CUDA target, `requirements.txt` now pins the PyTorch CUD
 The diarization preflight also validates that the configured `DIARIZATION_MODEL_ID` is actually accessible with the current `HUGGINGFACE_TOKEN`. For `pyannote/speaker-diarization-community-1`, that token must belong to an account that has already accepted the model access conditions on Hugging Face.
 
 When diarization succeeds, `speaker_segments_json` is persisted as a JSON list, including `[]` when normalization yields no valid segments. When ASR succeeds but diarization fails in a controlled way, the worker now still preserves the transcript, marks the job as `completed`, stores `speaker_segments_json = None`, and records the degraded diarization outcome in internal result metadata.
+
+## Public Result Retrieval
+
+Use `GET /jobs/{job_id}/result` to read the curated public result for one persisted job.
+
+- `200` when a `JobResult` exists
+- `404` when the job does not exist
+- `409` when the job exists but no public result is available yet
+
+The public result payload exposes:
+
+- `job_id`
+- `transcript_text`
+- `transcript_json` with only `segments` and `language`
+- `speaker_segments_json`
+- `detected_language`
+- `empty_transcript`
+- `diarization_attempted`
+- `diarization_status`
+
+The API does not expose raw `metadata_json` or internal runtime fields such as `worker_id`, `requested_device`, `resolved_device`, `compute_type`, `engine`, or `model`.
+
+Successful diarization keeps `speaker_segments_json` as a JSON list, including `[]` when normalization yields no valid segments. Controlled diarization degradation keeps `speaker_segments_json = null` while still returning the preserved transcript.
+
+Storage retention and cleanup remain separate work and are not implemented by this endpoint.
 
 ## Demo Audio Sources
 
