@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.dependencies import get_session_factory
 from app.db.models import Job, JobResult, JobStatus
 import app.worker.service as worker_service
-from app.worker.cleanup import _resolve_safe_path, run_storage_cleanup
+from app.worker.cleanup import (
+    StorageCleanupReport,
+    _resolve_safe_path,
+    log_storage_cleanup_report,
+    run_storage_cleanup,
+)
 
 
 @pytest.fixture()
@@ -609,6 +615,43 @@ def test_resolve_safe_path_rejects_artifact_path_outside_root(tmp_path: Path) ->
     assert safe_path is None
     assert outside_path.exists()
     assert any("outside configured root" in warning for warning in warnings)
+
+
+def test_log_storage_cleanup_report_includes_duration_summary_and_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cleanup logging should expose a compact summary plus warning lines."""
+    caplog.set_level(logging.INFO, logger="app.worker.cleanup")
+
+    report = StorageCleanupReport(
+        input_files_processed=2,
+        input_files_deleted=1,
+        artifact_files_processed=3,
+        artifact_files_deleted=2,
+        artifact_dirs_deleted=1,
+        duration_ms=17,
+        warnings=("Skipping unsafe input path 'x'.",),
+    )
+
+    log_storage_cleanup_report(
+        logger=logging.getLogger("app.worker.cleanup"),
+        trigger="startup",
+        report=report,
+    )
+
+    assert any(
+        record.levelname == "INFO"
+        and "Storage cleanup trigger=startup" in record.message
+        and "input_processed=2" in record.message
+        and "artifact_deleted=2" in record.message
+        and "duration_ms=17" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "WARNING"
+        and "Skipping unsafe input path" in record.message
+        for record in caplog.records
+    )
 
 
 def test_run_worker_forever_runs_periodic_cleanup_on_configured_cadence(

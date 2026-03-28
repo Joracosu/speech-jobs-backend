@@ -1,6 +1,7 @@
 """Tests for the read-only jobs API."""
 
 from collections.abc import Iterator
+import logging
 from typing import Any
 
 import pytest
@@ -410,3 +411,82 @@ def test_get_job_result_uses_stable_fallbacks_for_legacy_incomplete_metadata(
         "diarization_attempted": False,
         "diarization_status": None,
     }
+
+
+def test_get_job_result_logs_not_found_and_not_ready_outcomes(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Result endpoint should log compact domain outcomes for 404 and 409."""
+    caplog.set_level(logging.INFO, logger="app.api.routes.jobs")
+
+    missing_response = client.get("/jobs/999999/result")
+    pending_job_id = _create_job(session_factory, status=JobStatus.PENDING)
+    not_ready_response = client.get(f"/jobs/{pending_job_id}/result")
+
+    assert missing_response.status_code == 404
+    assert not_ready_response.status_code == 409
+    assert any(
+        record.levelname == "INFO"
+        and "Result fetch job_id=999999 outcome=not_found" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "INFO"
+        and f"Result fetch job_id={pending_job_id} outcome=not_ready" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+
+
+def test_get_job_result_logs_success_without_leaking_internal_payloads(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Successful result fetch logging should stay compact and non-leaky."""
+    sensitive_transcript = "top secret transcript payload"
+    job_id = _create_job(
+        session_factory,
+        status=JobStatus.COMPLETED,
+        result_data={
+            "transcript_text": sensitive_transcript,
+            "transcript_json": {
+                "segments": [
+                    {"id": 0, "start": 0.0, "end": 0.5, "text": sensitive_transcript},
+                ],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            "speaker_segments_json": None,
+            "detected_language": "en",
+            "metadata_json": {
+                "worker_id": "local-worker-1",
+                "requested_device": "cuda",
+                "resolved_device": "cuda",
+                "compute_type": "float16",
+                "empty_transcript": False,
+                "diarization_attempted": True,
+                "diarization_status": "failed",
+                "diarization_error_message": "internal only metadata",
+            },
+        },
+    )
+    caplog.set_level(logging.INFO, logger="app.api.routes.jobs")
+
+    response = client.get(f"/jobs/{job_id}/result")
+
+    assert response.status_code == 200
+    assert any(
+        record.levelname == "INFO"
+        and f"Result fetch job_id={job_id} outcome=ok" in record.message
+        and "diarization_status=failed" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert sensitive_transcript not in caplog.text
+    assert "transcript_json" not in caplog.text
+    assert "metadata_json" not in caplog.text

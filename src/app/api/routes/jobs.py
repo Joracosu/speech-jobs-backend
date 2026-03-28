@@ -1,5 +1,7 @@
 """Read-only job endpoints backed by the persistence layer."""
 
+import logging
+from time import perf_counter
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -12,11 +14,17 @@ from app.core.settings import Settings, get_settings
 from app.db.models import Job, JobResult, JobStatus
 from app.services.uploads import UploadValidationError, store_uploaded_audio
 
+LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 ALLOWED_PROFILES = {"fast", "balanced", "accurate"}
 ALLOWED_DEVICE_PREFERENCES = {"auto", "cpu", "cuda"}
 JOB_NOT_FOUND_DETAIL = "Job not found"
 JOB_RESULT_NOT_AVAILABLE_DETAIL = "Job result is not available yet."
+
+
+def _elapsed_ms(start_time: float) -> int:
+    """Return elapsed milliseconds from a monotonic start time."""
+    return max(0, int((perf_counter() - start_time) * 1000))
 
 
 def _normalize_language(value: object) -> str | None:
@@ -113,6 +121,7 @@ def get_job_result(
     session: Annotated[Session, Depends(get_db_session)],
 ) -> JobResultRead:
     """Return the curated public result for one persisted job."""
+    started_at = perf_counter()
     statement = (
         select(Job)
         .where(Job.id == job_id)
@@ -120,12 +129,29 @@ def get_job_result(
     )
     job = session.scalar(statement)
     if job is None:
+        LOGGER.info(
+            "Result fetch job_id=%s outcome=not_found duration_ms=%s",
+            job_id,
+            _elapsed_ms(started_at),
+        )
         raise HTTPException(status_code=404, detail=JOB_NOT_FOUND_DETAIL)
 
     if job.result is None:
+        LOGGER.info(
+            "Result fetch job_id=%s outcome=not_ready duration_ms=%s",
+            job_id,
+            _elapsed_ms(started_at),
+        )
         raise HTTPException(status_code=409, detail=JOB_RESULT_NOT_AVAILABLE_DETAIL)
 
-    return _build_job_result_read(job, job.result)
+    public_result = _build_job_result_read(job, job.result)
+    LOGGER.info(
+        "Result fetch job_id=%s outcome=ok diarization_status=%s duration_ms=%s",
+        job_id,
+        public_result.diarization_status,
+        _elapsed_ms(started_at),
+    )
+    return public_result
 
 
 @router.post("/upload", response_model=JobRead, status_code=status.HTTP_201_CREATED)
@@ -137,6 +163,7 @@ async def upload_job(
     settings: Annotated[Settings, Depends(get_settings)] = None,
 ) -> Job:
     """Validate an uploaded audio file, store it locally, and create a pending job."""
+    started_at = perf_counter()
     selected_profile = profile or settings.default_profile
     selected_device_preference = device_preference or settings.device_preference
 
@@ -183,4 +210,12 @@ async def upload_job(
         raise
 
     session.refresh(job)
+    LOGGER.info(
+        "Upload accepted job_id=%s profile=%s device_preference=%s file_size_bytes=%s duration_ms=%s",
+        job.id,
+        selected_profile,
+        selected_device_preference,
+        stored_upload.file_size_bytes,
+        _elapsed_ms(started_at),
+    )
     return job

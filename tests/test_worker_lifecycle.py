@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import logging
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,13 @@ def clean_jobs_tables(session_factory: sessionmaker[Session]) -> Iterator[None]:
             session.execute(delete(JobResult))
             session.execute(delete(Job))
             session.commit()
+
+
+def _assert_logs_do_not_leak_payloads(caplog: pytest.LogCaptureFixture) -> None:
+    """Assert that worker logs avoid leaking large or sensitive internal payloads."""
+    assert "transcript_text" not in caplog.text
+    assert "transcript_json" not in caplog.text
+    assert "metadata_json" not in caplog.text
 
 
 def test_run_worker_once_returns_false_with_no_pending_jobs(
@@ -659,3 +667,314 @@ def test_run_worker_once_fails_when_job_already_has_a_result(
         )
         assert len(persisted_results) == 1
         assert persisted_results[0].transcript_text == "already there"
+
+
+def test_worker_logs_full_success_with_phase_timings_and_no_payload_leak(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Full success logs should include job context, timings, and no payload leakage."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+    sensitive_transcript = "sensitive transcript payload"
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text=sensitive_transcript,
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": sensitive_transcript}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: DiarizationResult(
+            speaker_segments_json=[{"speaker": "speaker_0", "start": 0.0, "end": 1.0}],
+            metadata_json={
+                "diarization_enabled": True,
+                "diarization_model_id": "pyannote/test-model",
+                "diarization_device": "cpu",
+                "speaker_count": 1,
+            },
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="fa" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    caplog.set_level(logging.INFO, logger="app.worker.service")
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    assert any(
+        record.levelname == "INFO"
+        and f"Claimed pending job id={job_id}" in record.message
+        for record in caplog.records
+    )
+    assert not any(
+        "Started processing job" in record.message for record in caplog.records
+    )
+    assert any(
+        record.levelname == "INFO"
+        and f"ASR completed for job id={job_id}" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "INFO"
+        and f"Diarization completed for job id={job_id}" in record.message
+        and "diarization_status=completed" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "INFO"
+        and f"Job id={job_id} finished successfully" in record.message
+        and "diarization_status=completed" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert sensitive_transcript not in caplog.text
+    _assert_logs_do_not_leak_payloads(caplog)
+
+
+def test_worker_logs_degraded_success_with_phase_timing_and_no_payload_leak(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Degraded success logs should stay explicit, timed, and non-leaky."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+    sensitive_transcript = "degraded sensitive transcript"
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text=sensitive_transcript,
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": sensitive_transcript}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            DiarizationExecutionError("pyannote degraded failure detail")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="fb" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    caplog.set_level(logging.INFO, logger="app.worker.service")
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    assert any(
+        record.levelname == "WARNING"
+        and f"Diarization degraded for job id={job_id}" in record.message
+        and "diarization_status=failed" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "WARNING"
+        and f"Job id={job_id} finished successfully with degraded diarization" in record.message
+        and "diarization_status=failed" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert sensitive_transcript not in caplog.text
+    _assert_logs_do_not_leak_payloads(caplog)
+
+
+def test_worker_logs_terminal_asr_failure_with_timing_and_no_payload_leak(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ASR terminal failures should log ERROR with phase timing and final outcome."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: (_ for _ in ()).throw(
+            AsrExecutionError("faster-whisper transcription failed")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="fc" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    caplog.set_level(logging.INFO, logger="app.worker.service")
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    assert any(
+        record.levelname == "ERROR"
+        and f"ASR failed for job id={job_id}" in record.message
+        and "duration_ms=" in record.message
+        and "error_code=asr_error" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "ERROR"
+        and f"Job id={job_id} finished with terminal failure" in record.message
+        and "error_code=asr_error" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    _assert_logs_do_not_leak_payloads(caplog)
+
+
+def test_worker_logs_terminal_diarization_failure_with_timing_and_no_payload_leak(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unexpected diarization failures should log terminal ERROR/exception timing."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+    sensitive_transcript = "terminal sensitive transcript"
+
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text=sensitive_transcript,
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": sensitive_transcript}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("diarization runtime crashed")),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="fd" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    caplog.set_level(logging.INFO, logger="app.worker.service")
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    assert any(
+        record.levelname == "ERROR"
+        and f"Diarization failed terminally for job id={job_id}" in record.message
+        and "duration_ms=" in record.message
+        and "error_code=processing_error" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        record.levelname == "ERROR"
+        and f"Job id={job_id} finished with terminal failure" in record.message
+        and "error_code=processing_error" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert sensitive_transcript not in caplog.text
+    _assert_logs_do_not_leak_payloads(caplog)

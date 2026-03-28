@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
@@ -27,6 +28,7 @@ class StorageCleanupReport:
     artifact_files_processed: int
     artifact_files_deleted: int
     artifact_dirs_deleted: int
+    duration_ms: int
     warnings: tuple[str, ...]
 
     @property
@@ -325,6 +327,7 @@ def run_storage_cleanup(
     now: datetime | None = None,
 ) -> StorageCleanupReport:
     """Run one best-effort local storage cleanup pass."""
+    started_at = perf_counter()
     cleanup_now = now or utcnow()
     warnings: list[str] = []
 
@@ -353,6 +356,7 @@ def run_storage_cleanup(
         artifact_files_processed=artifact_files_processed,
         artifact_files_deleted=artifact_files_deleted,
         artifact_dirs_deleted=artifact_dirs_deleted,
+        duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
         warnings=tuple(warnings),
     )
 
@@ -365,7 +369,7 @@ def log_storage_cleanup_report(
 ) -> None:
     """Log one compact summary for a cleanup pass."""
     logger.info(
-        "Storage cleanup (%s): input processed=%s deleted=%s, artifact processed=%s deleted=%s, artifact_dirs_deleted=%s, warnings=%s",
+        "Storage cleanup trigger=%s input_processed=%s input_deleted=%s artifact_processed=%s artifact_deleted=%s artifact_dirs_deleted=%s warnings=%s duration_ms=%s",
         trigger,
         report.input_files_processed,
         report.input_files_deleted,
@@ -373,6 +377,7 @@ def log_storage_cleanup_report(
         report.artifact_files_deleted,
         report.artifact_dirs_deleted,
         len(report.warnings),
+        report.duration_ms,
     )
     for warning_message in report.warnings:
         logger.warning("Storage cleanup (%s): %s", trigger, warning_message)

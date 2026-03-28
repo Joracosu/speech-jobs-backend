@@ -381,6 +381,8 @@ Artifact cleanup remains local and filesystem-based. It only traverses paths und
 
 Database rows and persisted `job_results` remain outside retention cleanup. The database stays the source of truth for lifecycle and result retrieval even after local input/artifact cleanup.
 
+Cleanup reporting now includes one compact summary per pass with counters, warning count, trigger, and whole-pass `duration_ms`. Per-path cleanup anomalies remain warnings and do not become fatal worker errors.
+
 ---
 
 ## Audio Input Validation
@@ -466,11 +468,12 @@ Minimum expected logging behavior:
 
 - log job creation
 - log worker claim/start
-- log runtime resolution for ASR and diarization when processing starts
-- log processing completion
-- log failures with job context
+- log ASR and diarization phase start/end with runtime context and `duration_ms`
+- log processing completion with an operational distinction between full success and degraded success
+- log terminal failures with job context and `duration_ms`
+- log cleanup summaries with counters and `duration_ms`
 - include `job_id` in relevant log lines
-- record processing duration where possible
+- record timings in `duration_ms` where they are cheap and local to the operation
 
 This project does **not** require a full observability stack in v1.
 

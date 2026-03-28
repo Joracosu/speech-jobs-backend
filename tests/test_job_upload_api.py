@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from io import BytesIO
+import logging
 from pathlib import Path
 import wave
 
@@ -197,3 +198,32 @@ def test_upload_reuses_existing_file_for_same_content(
     assert len(jobs) == 2
     assert jobs[0].stored_path == jobs[1].stored_path
     assert Path(jobs[0].stored_path).exists()
+
+
+def test_upload_logs_accepted_job_without_leaking_payloads(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Accepted uploads should leave one compact domain log without payload leakage."""
+    wav_bytes = _build_valid_wav_bytes()
+    caplog.set_level(logging.INFO, logger="app.api.routes.jobs")
+
+    response = client.post(
+        "/jobs/upload",
+        files={"file": ("logged.wav", wav_bytes, "audio/wav")},
+    )
+
+    assert response.status_code == 201
+    job_id = response.json()["id"]
+
+    assert any(
+        record.levelname == "INFO"
+        and f"Upload accepted job_id={job_id}" in record.message
+        and "profile=balanced" in record.message
+        and "device_preference=auto" in record.message
+        and "duration_ms=" in record.message
+        for record in caplog.records
+    )
+    assert "transcript_text" not in caplog.text
+    assert "transcript_json" not in caplog.text
+    assert "metadata_json" not in caplog.text

@@ -147,6 +147,23 @@ Relevant retention settings and defaults:
 - `WORKER_CLEANUP_EVERY_N_JOBS=10`
 - `STORE_INTERMEDIATE_ARTIFACTS=false`
 
+## Operational Diagnostics
+
+`S19` now adds minimal operational logging without changing API or worker semantics.
+
+- the API emits compact domain logs for accepted uploads and `GET /jobs/{job_id}/result` outcomes (`200`, `404`, `409`)
+- the worker logs claim/start, ASR, diarization, full success, degraded success, and terminal failure with `job_id`
+- cleanup passes now log one compact summary with counters, warning count, trigger, and `duration_ms`
+
+Timings use `duration_ms` consistently:
+
+- upload handler timing is measured locally inside the upload endpoint
+- result retrieval timing is measured locally inside the result handler
+- worker logs include total job timing plus ASR and diarization phase timing
+- cleanup timing covers the whole cleanup pass
+
+The logs are intentionally compact and avoid leaking transcript text, full transcript JSON, raw metadata payloads, or an advanced observability stack.
+
 ## Demo Audio Sources
 
 - `conversation_two_speakers_10m.m4a`: excerpt from "Colm Walsh on holy wells and other places around Graiguenamanagh", source Wikimedia Commons, author A.-K. D., license CC0 1.0

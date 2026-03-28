@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from time import sleep
+from time import perf_counter, sleep
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -22,6 +22,11 @@ from app.worker.diarization import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _elapsed_ms(start_time: float) -> int:
+    """Return elapsed milliseconds from a monotonic start time."""
+    return max(0, int((perf_counter() - start_time) * 1000))
 
 
 def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None:
@@ -43,6 +48,7 @@ def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None
         job.error_code = None
         job.error_message = None
         session.flush()
+        LOGGER.info("Claimed pending job id=%s", job.id)
         return job.id
 
 
@@ -210,49 +216,87 @@ def process_claimed_job(
     settings: Settings,
 ) -> None:
     """Process one claimed job using real ASR and atomic terminal state updates."""
+    job_started_at = perf_counter()
     try:
         job_context = _load_claimed_job_context(session_factory, job_id)
         if job_context is None:
+            with session_factory() as session:
+                failed_job = session.get(Job, job_id)
+                if failed_job is not None and failed_job.status == JobStatus.FAILED:
+                    LOGGER.error(
+                        "Job id=%s finished with terminal failure error_code=%s duration_ms=%s",
+                        job_id,
+                        failed_job.error_code,
+                        _elapsed_ms(job_started_at),
+                    )
             return
 
+        asr_started_at = perf_counter()
         LOGGER.info(
-            "Processing claimed job id=%s requested_device=%s profile=%s",
+            "ASR started for job id=%s requested_device=%s profile=%s",
             job_id,
             job_context.requested_device,
             job_context.profile,
         )
-
         asr_result = transcribe_audio(
             audio_path=job_context.input_path,
             profile=job_context.profile,
             requested_device=job_context.requested_device,
         )
         LOGGER.info(
-            "ASR runtime ready for job id=%s requested_device=%s resolved_device=%s",
+            "ASR completed for job id=%s requested_device=%s resolved_device=%s duration_ms=%s",
             job_id,
             job_context.requested_device,
             asr_result.metadata_json["resolved_device"],
+            _elapsed_ms(asr_started_at),
         )
     except AsrExecutionError as exc:
-        LOGGER.warning("ASR failed for job id=%s: %s", job_id, exc)
+        LOGGER.error(
+            "ASR failed for job id=%s requested_device=%s error_code=asr_error duration_ms=%s: %s",
+            job_id,
+            job_context.requested_device if "job_context" in locals() and job_context is not None else "unknown",
+            _elapsed_ms(asr_started_at) if "asr_started_at" in locals() else _elapsed_ms(job_started_at),
+            exc,
+        )
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="asr_error",
             error_message=str(exc),
         )
+        LOGGER.error(
+            "Job id=%s finished with terminal failure error_code=asr_error duration_ms=%s",
+            job_id,
+            _elapsed_ms(job_started_at),
+        )
         return
     except Exception as exc:
-        LOGGER.warning("Worker processing failed for job id=%s: %s", job_id, exc)
+        LOGGER.exception(
+            "ASR crashed for job id=%s requested_device=%s error_code=processing_error duration_ms=%s",
+            job_id,
+            job_context.requested_device if "job_context" in locals() and job_context is not None else "unknown",
+            _elapsed_ms(asr_started_at) if "asr_started_at" in locals() else _elapsed_ms(job_started_at),
+        )
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="processing_error",
             error_message=f"Worker processing failed: {exc}",
         )
+        LOGGER.error(
+            "Job id=%s finished with terminal failure error_code=processing_error duration_ms=%s",
+            job_id,
+            _elapsed_ms(job_started_at),
+        )
         return
 
     try:
+        diarization_started_at = perf_counter()
+        LOGGER.info(
+            "Diarization started for job id=%s requested_device=%s",
+            job_id,
+            job_context.requested_device,
+        )
         diarization_result = diarize_audio(
             audio_path=job_context.input_path,
             requested_device=job_context.requested_device,
@@ -260,15 +304,18 @@ def process_claimed_job(
             huggingface_token=settings.huggingface_token,
         )
         LOGGER.info(
-            "Diarization runtime ready for job id=%s requested_device=%s resolved_device=%s",
+            "Diarization completed for job id=%s requested_device=%s resolved_device=%s diarization_status=completed duration_ms=%s",
             job_id,
             job_context.requested_device,
             diarization_result.metadata_json["diarization_device"],
+            _elapsed_ms(diarization_started_at),
         )
     except DiarizationExecutionError as exc:
         LOGGER.warning(
-            "Diarization failed for job id=%s, preserving ASR result: %s",
+            "Diarization degraded for job id=%s requested_device=%s diarization_status=failed duration_ms=%s: %s",
             job_id,
+            job_context.requested_device,
+            _elapsed_ms(diarization_started_at),
             exc,
         )
         speaker_segments_json: list[dict[str, object]] | None = None
@@ -279,12 +326,22 @@ def process_claimed_job(
             diarization_error_message=str(exc),
         )
     except Exception as exc:
-        LOGGER.warning("Unexpected diarization processing failed for job id=%s: %s", job_id, exc)
+        LOGGER.exception(
+            "Diarization failed terminally for job id=%s requested_device=%s error_code=processing_error duration_ms=%s",
+            job_id,
+            job_context.requested_device,
+            _elapsed_ms(diarization_started_at),
+        )
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="processing_error",
             error_message=f"Worker processing failed: {exc}",
+        )
+        LOGGER.error(
+            "Job id=%s finished with terminal failure error_code=processing_error duration_ms=%s",
+            job_id,
+            _elapsed_ms(job_started_at),
         )
         return
     else:
@@ -308,19 +365,37 @@ def process_claimed_job(
             detected_language=asr_result.detected_language,
             metadata_json=metadata_json,
         )
-        LOGGER.info(
-            "Completed job id=%s successfully with diarization_status=%s.",
-            job_id,
-            metadata_json["diarization_status"],
-        )
     except Exception as exc:
-        LOGGER.warning("Failed to persist result for job id=%s: %s", job_id, exc)
+        LOGGER.exception(
+            "Failed to persist completed result for job id=%s error_code=processing_error",
+            job_id,
+        )
         _mark_job_failed(
             session_factory=session_factory,
             job_id=job_id,
             error_code="processing_error",
             error_message=f"Failed to persist processing result: {exc}",
         )
+        LOGGER.error(
+            "Job id=%s finished with terminal failure error_code=processing_error duration_ms=%s",
+            job_id,
+            _elapsed_ms(job_started_at),
+        )
+        return
+
+    if metadata_json["diarization_status"] == "completed":
+        LOGGER.info(
+            "Job id=%s finished successfully diarization_status=completed duration_ms=%s",
+            job_id,
+            _elapsed_ms(job_started_at),
+        )
+        return
+
+    LOGGER.warning(
+        "Job id=%s finished successfully with degraded diarization diarization_status=failed duration_ms=%s",
+        job_id,
+        _elapsed_ms(job_started_at),
+    )
 
 
 def run_worker_once(
