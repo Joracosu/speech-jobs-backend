@@ -90,7 +90,7 @@ This section is also where the repository now owns **degraded diarization semant
 
 Recovery is an explicit part of the architecture, not an afterthought.
 
-The system now treats stale `running` jobs as recoverable lifecycle anomalies rather than letting them remain indefinitely ambiguous. That behavior is implemented through **stale-running reconciliation** backed by internal liveness tracking.
+The system now treats stale `running` jobs as recoverable lifecycle anomalies rather than letting them remain indefinitely ambiguous. That behavior is implemented through **stale-running reconciliation** backed by internal liveness tracking and heartbeat-based liveness signals.
 
 At the architecture level, the important point is:
 
@@ -106,7 +106,7 @@ Cleanup is a bounded worker responsibility.
 
 The design intent is:
 
-- clean up local input and optional artifact files by retention rules
+- clean up local input and optional artifact files by TTL-based retention rules
 - keep cleanup best-effort and local-only
 - keep database lifecycle and persisted results as the source of truth
 
