@@ -68,7 +68,10 @@ jobs:
               raise SystemExit(f"PostgreSQL did not become ready: {last_error}")
           PY
 
-      - name: Apply database migrations
+      - name: Apply database migrations (first pass)
+        run: alembic upgrade head
+
+      - name: Verify migration idempotency (second pass)
         run: alembic upgrade head
 
       - name: Run test suite

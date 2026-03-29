@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, Thread
 from time import perf_counter, sleep
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.core.settings import Settings, get_settings
 from app.db import Job, JobResult, JobStatus, create_session_factory, utcnow
@@ -19,14 +22,228 @@ from app.worker.diarization import (
     DiarizationResult,
     diarize_audio,
 )
+from app.worker.silence import SilenceClassification, inspect_audio_silence
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_WORKER_HEARTBEAT_INTERVAL_SECONDS = 10.0
+DEFAULT_WORKER_STALE_AFTER_SECONDS = 60.0
+MIN_COORDINATION_INTERVAL_SECONDS = 0.01
+PROCESSING_INTERRUPTED_ERROR_MESSAGE = (
+    "Worker processing was interrupted before completion."
+)
 
 
 def _elapsed_ms(start_time: float) -> int:
     """Return elapsed milliseconds from a monotonic start time."""
     return max(0, int((perf_counter() - start_time) * 1000))
+
+
+def _get_heartbeat_interval_seconds(settings: Settings | object) -> float:
+    """Return the effective heartbeat interval in seconds."""
+    interval = getattr(
+        settings,
+        "worker_heartbeat_interval_seconds",
+        DEFAULT_WORKER_HEARTBEAT_INTERVAL_SECONDS,
+    )
+    try:
+        return max(float(interval), MIN_COORDINATION_INTERVAL_SECONDS)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_HEARTBEAT_INTERVAL_SECONDS
+
+
+def _get_stale_after_seconds(settings: Settings | object) -> float:
+    """Return the effective stale timeout in seconds."""
+    stale_after = getattr(
+        settings,
+        "worker_stale_after_seconds",
+        DEFAULT_WORKER_STALE_AFTER_SECONDS,
+    )
+    try:
+        return max(float(stale_after), MIN_COORDINATION_INTERVAL_SECONDS)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_STALE_AFTER_SECONDS
+
+
+def _get_reconciliation_interval_seconds(settings: Settings | object) -> float:
+    """Return the lightweight cadence used for steady-state reconciliation."""
+    heartbeat_interval = _get_heartbeat_interval_seconds(settings)
+    stale_after = _get_stale_after_seconds(settings)
+    return max(heartbeat_interval, stale_after / 2, MIN_COORDINATION_INTERVAL_SECONDS)
+
+
+@dataclass(slots=True, frozen=True)
+class ReconciliationReport:
+    """Compact summary for one stale-running reconciliation pass."""
+
+    scanned_jobs: int
+    stale_jobs: int
+    failed_jobs: int
+    completed_jobs: int
+    duration_ms: int
+
+
+def log_reconciliation_report(
+    logger: logging.Logger,
+    trigger: str,
+    report: ReconciliationReport,
+) -> None:
+    """Log one compact reconciliation summary."""
+    logger.info(
+        "Running recovery trigger=%s scanned=%s stale=%s failed=%s completed=%s duration_ms=%s",
+        trigger,
+        report.scanned_jobs,
+        report.stale_jobs,
+        report.failed_jobs,
+        report.completed_jobs,
+        report.duration_ms,
+    )
+
+
+def _update_job_heartbeat(
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    beat_time: datetime | None = None,
+) -> bool:
+    """Refresh the heartbeat only while the selected job is still running."""
+    effective_beat_time = beat_time or utcnow()
+    with session_factory() as session, session.begin():
+        result = session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == JobStatus.RUNNING)
+            .values(
+                last_heartbeat_at=effective_beat_time,
+                updated_at=effective_beat_time,
+            )
+        )
+        return result.rowcount > 0
+
+
+class _JobHeartbeat:
+    """Small background heartbeat loop for one actively processed job."""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        job_id: int,
+        interval_seconds: float,
+    ) -> None:
+        self._session_factory = session_factory
+        self._job_id = job_id
+        self._interval_seconds = interval_seconds
+        self._stop_event = Event()
+        self._thread = Thread(
+            target=self._run,
+            name=f"job-heartbeat-{job_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        """Start the daemon heartbeat loop."""
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the heartbeat loop and wait briefly for thread exit."""
+        self._stop_event.set()
+        self._thread.join(timeout=self._interval_seconds + 0.5)
+
+    def _run(self) -> None:
+        """Refresh job liveness until the job is no longer running."""
+        while not self._stop_event.wait(self._interval_seconds):
+            if not _update_job_heartbeat(self._session_factory, self._job_id):
+                return
+
+
+@contextmanager
+def _job_heartbeat_context(
+    session_factory: sessionmaker[Session],
+    job_id: int,
+    settings: Settings | object,
+):
+    """Keep one claimed job fresh while it is actively being processed."""
+    heartbeat = _JobHeartbeat(
+        session_factory=session_factory,
+        job_id=job_id,
+        interval_seconds=_get_heartbeat_interval_seconds(settings),
+    )
+    heartbeat.start()
+    try:
+        yield
+    finally:
+        heartbeat.stop()
+
+
+def _resolve_job_liveness_timestamp(job: Job) -> tuple[datetime | None, bool]:
+    """Return the effective liveness timestamp plus anomaly marker."""
+    if job.last_heartbeat_at is not None:
+        return job.last_heartbeat_at, False
+    if job.started_at is not None:
+        return job.started_at, False
+    return None, True
+
+
+def reconcile_stale_running_jobs(
+    session_factory: sessionmaker[Session],
+    settings: Settings | object,
+    *,
+    trigger: str,
+    now: datetime | None = None,
+) -> ReconciliationReport:
+    """Reconcile stale running jobs to explicit terminal states."""
+    started_at = perf_counter()
+    effective_now = now or utcnow()
+    stale_before = effective_now - timedelta(seconds=_get_stale_after_seconds(settings))
+    scanned_jobs = 0
+    stale_jobs = 0
+    failed_jobs = 0
+    completed_jobs = 0
+
+    with session_factory() as session, session.begin():
+        running_jobs = list(
+            session.scalars(
+                select(Job)
+                .where(Job.status == JobStatus.RUNNING)
+                .options(selectinload(Job.result))
+                .with_for_update(skip_locked=True)
+            ).all()
+        )
+        scanned_jobs = len(running_jobs)
+
+        for job in running_jobs:
+            liveness_timestamp, missing_liveness = _resolve_job_liveness_timestamp(job)
+            if missing_liveness:
+                LOGGER.warning(
+                    "Running recovery trigger=%s job_id=%s anomaly=missing_liveness_timestamps",
+                    trigger,
+                    job.id,
+                )
+            elif liveness_timestamp is not None and liveness_timestamp >= stale_before:
+                continue
+
+            stale_jobs += 1
+            if job.result is None:
+                job.status = JobStatus.FAILED
+                if job.completed_at is None:
+                    job.completed_at = effective_now
+                job.error_code = "processing_interrupted"
+                job.error_message = PROCESSING_INTERRUPTED_ERROR_MESSAGE
+                failed_jobs += 1
+                continue
+
+            job.status = JobStatus.COMPLETED
+            if job.completed_at is None:
+                job.completed_at = effective_now
+            job.error_code = None
+            job.error_message = None
+            completed_jobs += 1
+
+    return ReconciliationReport(
+        scanned_jobs=scanned_jobs,
+        stale_jobs=stale_jobs,
+        failed_jobs=failed_jobs,
+        completed_jobs=completed_jobs,
+        duration_ms=_elapsed_ms(started_at),
+    )
 
 
 def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None:
@@ -43,8 +260,10 @@ def claim_next_pending_job(session_factory: sessionmaker[Session]) -> int | None
         if job is None:
             return None
 
+        heartbeat_at = utcnow()
         job.status = JobStatus.RUNNING
-        job.started_at = utcnow()
+        job.started_at = heartbeat_at
+        job.last_heartbeat_at = heartbeat_at
         job.error_code = None
         job.error_message = None
         session.flush()
@@ -141,6 +360,23 @@ def _build_completed_metadata_with_degraded_diarization(
     }
 
 
+def _build_completed_metadata_for_silence(
+    settings: Settings,
+    profile: str,
+    requested_device: str,
+) -> dict[str, object]:
+    """Return the internal metadata for a silence short-circuit result."""
+    return {
+        "mode": "silence_short_circuit",
+        "profile": profile,
+        "requested_device": requested_device,
+        "worker_id": settings.worker_id,
+        "empty_transcript": True,
+        "diarization_attempted": False,
+        "result_origin": "silence_short_circuit",
+    }
+
+
 def _load_claimed_job_context(
     session_factory: sessionmaker[Session],
     job_id: int,
@@ -231,25 +467,79 @@ def process_claimed_job(
                     )
             return
 
-        asr_started_at = perf_counter()
-        LOGGER.info(
-            "ASR started for job id=%s requested_device=%s profile=%s",
-            job_id,
-            job_context.requested_device,
-            job_context.profile,
-        )
-        asr_result = transcribe_audio(
-            audio_path=job_context.input_path,
-            profile=job_context.profile,
-            requested_device=job_context.requested_device,
-        )
-        LOGGER.info(
-            "ASR completed for job id=%s requested_device=%s resolved_device=%s duration_ms=%s",
-            job_id,
-            job_context.requested_device,
-            asr_result.metadata_json["resolved_device"],
-            _elapsed_ms(asr_started_at),
-        )
+        with _job_heartbeat_context(
+            session_factory=session_factory,
+            job_id=job_id,
+            settings=settings,
+        ):
+            silence_result = inspect_audio_silence(job_context.input_path)
+            if silence_result.classification == SilenceClassification.SILENCE:
+                metadata_json = _build_completed_metadata_for_silence(
+                    settings=settings,
+                    profile=job_context.profile,
+                    requested_device=job_context.requested_device,
+                )
+                try:
+                    _persist_completed_job(
+                        session_factory=session_factory,
+                        job_id=job_id,
+                        transcript_text="",
+                        transcript_json={"segments": [], "language": None},
+                        speaker_segments_json=[],
+                        detected_language=None,
+                        metadata_json=metadata_json,
+                    )
+                except Exception as exc:
+                    LOGGER.exception(
+                        "Failed to persist completed silence result for job id=%s error_code=processing_error",
+                        job_id,
+                    )
+                    _mark_job_failed(
+                        session_factory=session_factory,
+                        job_id=job_id,
+                        error_code="processing_error",
+                        error_message=f"Failed to persist processing result: {exc}",
+                    )
+                    LOGGER.error(
+                        "Job id=%s finished with terminal failure error_code=processing_error duration_ms=%s",
+                        job_id,
+                        _elapsed_ms(job_started_at),
+                    )
+                    return
+
+                LOGGER.info(
+                    "Job id=%s finished successfully result_origin=silence_short_circuit empty_transcript=true duration_ms=%s",
+                    job_id,
+                    _elapsed_ms(job_started_at),
+                )
+                return
+
+            if silence_result.classification == SilenceClassification.INCONCLUSIVE:
+                LOGGER.info(
+                    "Silence precheck inconclusive for job id=%s fallback=asr detail=%s",
+                    job_id,
+                    silence_result.detail,
+                )
+
+            asr_started_at = perf_counter()
+            LOGGER.info(
+                "ASR started for job id=%s requested_device=%s profile=%s",
+                job_id,
+                job_context.requested_device,
+                job_context.profile,
+            )
+            asr_result = transcribe_audio(
+                audio_path=job_context.input_path,
+                profile=job_context.profile,
+                requested_device=job_context.requested_device,
+            )
+            LOGGER.info(
+                "ASR completed for job id=%s requested_device=%s resolved_device=%s duration_ms=%s",
+                job_id,
+                job_context.requested_device,
+                asr_result.metadata_json["resolved_device"],
+                _elapsed_ms(asr_started_at),
+            )
     except AsrExecutionError as exc:
         LOGGER.error(
             "ASR failed for job id=%s requested_device=%s error_code=asr_error duration_ms=%s: %s",
@@ -426,6 +716,8 @@ def run_worker_forever(
     resolved_settings = settings or get_settings()
     resolved_session_factory = session_factory or create_session_factory()
     processed_jobs_since_cleanup = 0
+    reconciliation_interval = _get_reconciliation_interval_seconds(resolved_settings)
+    last_reconciliation_at = perf_counter()
     cleanup_every_n_jobs = getattr(
         resolved_settings,
         "worker_cleanup_every_n_jobs",
@@ -433,6 +725,19 @@ def run_worker_forever(
     )
 
     while True:
+        if perf_counter() - last_reconciliation_at >= reconciliation_interval:
+            recovery_report = reconcile_stale_running_jobs(
+                session_factory=resolved_session_factory,
+                settings=resolved_settings,
+                trigger="cadence",
+            )
+            log_reconciliation_report(
+                logger=LOGGER,
+                trigger="cadence",
+                report=recovery_report,
+            )
+            last_reconciliation_at = perf_counter()
+
         processed_job = run_worker_once(
             session_factory=resolved_session_factory,
             settings=resolved_settings,

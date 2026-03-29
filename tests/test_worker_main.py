@@ -187,7 +187,7 @@ def test_main_once_uses_deferred_db_and_service_imports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-preflight execution should use deferred DB/service imports normally."""
-    calls: dict[str, object] = {}
+    calls: list[tuple[str, object]] = []
     monkeypatch.delitem(sys.modules, "app.db.config", raising=False)
     monkeypatch.delitem(sys.modules, "app.worker.service", raising=False)
     monkeypatch.delitem(sys.modules, "app.worker.cleanup", raising=False)
@@ -201,11 +201,18 @@ def test_main_once_uses_deferred_db_and_service_imports(
     monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
 
     def _run_cleanup(**kwargs: object) -> str:
-        calls["cleanup"] = kwargs
+        calls.append(("cleanup", kwargs))
         return "cleanup-report"
 
     def _log_cleanup(**kwargs: object) -> None:
-        calls["cleanup_log"] = kwargs
+        calls.append(("cleanup_log", kwargs))
+
+    def _run_recovery(**kwargs: object) -> str:
+        calls.append(("recovery", kwargs))
+        return "recovery-report"
+
+    def _log_recovery(**kwargs: object) -> None:
+        calls.append(("recovery_log", kwargs))
 
     monkeypatch.setitem(
         sys.modules,
@@ -229,7 +236,9 @@ def test_main_once_uses_deferred_db_and_service_imports(
         "app.worker.service",
         _make_module(
             "app.worker.service",
-            run_worker_once=lambda **kwargs: calls.update(kwargs),
+            reconcile_stale_running_jobs=_run_recovery,
+            log_reconciliation_report=_log_recovery,
+            run_worker_once=lambda **kwargs: calls.append(("worker_once", kwargs)),
             run_worker_forever=lambda **kwargs: (_ for _ in ()).throw(
                 AssertionError("continuous worker mode should not run in this test")
             ),
@@ -239,14 +248,43 @@ def test_main_once_uses_deferred_db_and_service_imports(
     exit_code = worker_main.main(["--once"])
 
     assert exit_code == 0
-    assert calls["cleanup"] == {
-        "session_factory": "fake-session-factory",
-        "settings": settings,
-    }
-    assert calls["cleanup_log"] == {
-        "logger": worker_main.LOGGER,
-        "trigger": "startup",
-        "report": "cleanup-report",
-    }
-    assert calls["session_factory"] == "fake-session-factory"
-    assert calls["settings"] == settings
+    assert calls == [
+        (
+            "recovery",
+            {
+                "session_factory": "fake-session-factory",
+                "settings": settings,
+                "trigger": "startup",
+            },
+        ),
+        (
+            "recovery_log",
+            {
+                "logger": worker_main.LOGGER,
+                "trigger": "startup",
+                "report": "recovery-report",
+            },
+        ),
+        (
+            "cleanup",
+            {
+                "session_factory": "fake-session-factory",
+                "settings": settings,
+            },
+        ),
+        (
+            "cleanup_log",
+            {
+                "logger": worker_main.LOGGER,
+                "trigger": "startup",
+                "report": "cleanup-report",
+            },
+        ),
+        (
+            "worker_once",
+            {
+                "session_factory": "fake-session-factory",
+                "settings": settings,
+            },
+        ),
+    ]

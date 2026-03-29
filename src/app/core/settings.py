@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     default_profile: str = "balanced"
     device_preference: str = "auto"
     worker_poll_interval_seconds: int = 5
+    worker_heartbeat_interval_seconds: int = 10
+    worker_stale_after_seconds: int = 60
     worker_cleanup_every_n_jobs: int = 10
     worker_id: str = "local-worker-1"
     input_retention_days: int = 7

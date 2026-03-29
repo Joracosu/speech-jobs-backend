@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import Job, JobResult, JobStatus
 from app.worker.asr import AsrExecutionError, AsrTranscriptionResult
 from app.worker.diarization import DiarizationExecutionError, DiarizationResult
+from app.worker.silence import SilenceClassification, SilenceInspectionResult
 from app.worker.service import run_worker_once
 
 
@@ -349,6 +350,154 @@ def test_run_worker_once_marks_job_failed_on_asr_error(
         assert session.scalar(
             select(JobResult).where(JobResult.job_id == job_id)
         ) is None
+
+
+def test_run_worker_once_short_circuits_silence_before_asr_and_diarization(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confident silence should complete without invoking ASR or diarization."""
+    input_path = tmp_path / "silence.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.inspect_audio_silence",
+        lambda *_: SilenceInspectionResult(SilenceClassification.SILENCE),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("transcribe_audio should not be called for silence")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("diarize_audio should not be called for silence")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="silence.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="ab" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=1.0,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.COMPLETED
+
+        persisted_result = session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        )
+        assert persisted_result is not None
+        assert persisted_result.transcript_text == ""
+        assert persisted_result.transcript_json == {"segments": [], "language": None}
+        assert persisted_result.detected_language is None
+        assert persisted_result.speaker_segments_json == []
+        assert persisted_result.metadata_json == {
+            "mode": "silence_short_circuit",
+            "profile": "balanced",
+            "requested_device": "auto",
+            "worker_id": "local-worker-1",
+            "empty_transcript": True,
+            "diarization_attempted": False,
+            "result_origin": "silence_short_circuit",
+        }
+
+
+def test_run_worker_once_falls_back_to_asr_when_silence_precheck_is_inconclusive(
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operational silence-precheck uncertainty should fail open to normal ASR."""
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"real-audio-bytes")
+
+    monkeypatch.setattr(
+        "app.worker.service.inspect_audio_silence",
+        lambda *_: SilenceInspectionResult(
+            SilenceClassification.INCONCLUSIVE,
+            detail="ffmpeg silencedetect failed during silence precheck.",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.transcribe_audio",
+        lambda **_: AsrTranscriptionResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            detected_language="en",
+            metadata_json={
+                "engine": "faster-whisper",
+                "model": "small",
+                "requested_device": "auto",
+                "resolved_device": "cpu",
+                "compute_type": "int8",
+                "empty_transcript": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.worker.service.diarize_audio",
+        lambda **_: (_ for _ in ()).throw(
+            DiarizationExecutionError("pyannote.audio diarization failed")
+        ),
+    )
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.PENDING,
+            original_filename="input.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="ac" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=1.0,
+            device_used="auto",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "auto"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert run_worker_once(session_factory=session_factory) is True
+
+    with session_factory() as session:
+        persisted_job = session.get(Job, job_id)
+        assert persisted_job is not None
+        assert persisted_job.status == JobStatus.COMPLETED
+
+        persisted_result = session.scalar(
+            select(JobResult).where(JobResult.job_id == job_id)
+        )
+        assert persisted_result is not None
+        assert persisted_result.transcript_text == "hello world"
+        assert persisted_result.speaker_segments_json is None
+        assert persisted_result.metadata_json["diarization_status"] == "failed"
 
 
 def test_run_worker_once_completes_job_with_degraded_result_on_diarization_error(

@@ -16,12 +16,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.dependencies import get_session_factory
 from app.core.settings import get_settings
-from app.db.models import Job, JobResult
+from app.db.models import Job, JobResult, JobStatus
 from app.main import app
 from app.worker.asr import AsrExecutionError, AsrTranscriptionResult
 from app.worker.cleanup import run_storage_cleanup
 from app.worker.diarization import DiarizationExecutionError, DiarizationResult
-from app.worker.service import run_worker_once
+from app.worker.service import reconcile_stale_running_jobs, run_worker_once
 
 
 def _build_valid_wav_bytes() -> bytes:
@@ -31,7 +31,18 @@ def _build_valid_wav_bytes() -> bytes:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(16000)
-        wav_file.writeframes(b"\x00\x00" * 320)
+        wav_file.writeframes((b"\x00\x08" + b"\x00\xf8") * 160)
+    return buffer.getvalue()
+
+
+def _build_silent_wav_bytes() -> bytes:
+    """Return a valid silent WAV file generated in memory."""
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 16000)
     return buffer.getvalue()
 
 
@@ -139,11 +150,15 @@ def clean_jobs_tables(session_factory: sessionmaker[Session]) -> Iterator[None]:
             session.commit()
 
 
-def _upload_valid_audio(client: TestClient) -> int:
-    """Upload one valid WAV file and return the created job id."""
+def _upload_audio(
+    client: TestClient,
+    wav_bytes: bytes,
+    filename: str = "sample.wav",
+) -> int:
+    """Upload one WAV file and return the created job id."""
     response = client.post(
         "/jobs/upload",
-        files={"file": ("sample.wav", _build_valid_wav_bytes(), "audio/wav")},
+        files={"file": (filename, wav_bytes, "audio/wav")},
     )
 
     assert response.status_code == 201
@@ -178,7 +193,7 @@ def test_full_success_flow_exposes_public_result_after_worker_processing(
         ),
     )
 
-    job_id = _upload_valid_audio(client)
+    job_id = _upload_audio(client, _build_valid_wav_bytes())
 
     assert run_worker_once(session_factory=session_factory, settings=get_settings()) is True
 
@@ -231,7 +246,7 @@ def test_degraded_success_flow_keeps_public_result_when_diarization_fails(
         ),
     )
 
-    job_id = _upload_valid_audio(client)
+    job_id = _upload_audio(client, _build_valid_wav_bytes())
 
     assert run_worker_once(session_factory=session_factory, settings=get_settings()) is True
 
@@ -260,7 +275,7 @@ def test_terminal_failure_flow_returns_result_409_after_asr_error(
         ),
     )
 
-    job_id = _upload_valid_audio(client)
+    job_id = _upload_audio(client, _build_valid_wav_bytes())
 
     assert run_worker_once(session_factory=session_factory, settings=get_settings()) is True
 
@@ -277,24 +292,9 @@ def test_terminal_failure_flow_returns_result_409_after_asr_error(
 def test_valid_empty_transcript_flow_remains_publicly_retrievable(
     client: TestClient,
     session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid empty transcript should still roundtrip through the public result endpoint."""
-    monkeypatch.setattr(
-        "app.worker.service.transcribe_audio",
-        lambda **_: _build_asr_result(
-            transcript_text="",
-            segments=[],
-            language=None,
-            empty_transcript=True,
-        ),
-    )
-    monkeypatch.setattr(
-        "app.worker.service.diarize_audio",
-        lambda **_: _build_diarization_result([]),
-    )
-
-    job_id = _upload_valid_audio(client)
+    """A truly silent upload should short-circuit to a coherent empty public result."""
+    job_id = _upload_audio(client, _build_silent_wav_bytes(), filename="silence.wav")
 
     assert run_worker_once(session_factory=session_factory, settings=get_settings()) is True
 
@@ -311,8 +311,8 @@ def test_valid_empty_transcript_flow_remains_publicly_retrievable(
         "speaker_segments_json": [],
         "detected_language": None,
         "empty_transcript": True,
-        "diarization_attempted": True,
-        "diarization_status": "completed",
+        "diarization_attempted": False,
+        "diarization_status": None,
     }
 
 
@@ -340,7 +340,7 @@ def test_public_result_stays_available_after_input_cleanup_removes_expired_file(
         ),
     )
 
-    job_id = _upload_valid_audio(client)
+    job_id = _upload_audio(client, _build_valid_wav_bytes())
 
     assert run_worker_once(session_factory=session_factory, settings=get_settings()) is True
 
@@ -368,3 +368,113 @@ def test_public_result_stays_available_after_input_cleanup_removes_expired_file(
 
     assert result_response.status_code == 200
     assert result_response.json()["transcript_text"] == "cleanup-safe transcript"
+
+
+def test_reconciled_stale_running_without_result_keeps_public_result_unavailable(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    """A stale running job without result should recover to failed and keep /result at 409."""
+    now = datetime(2026, 3, 29, 12, 0, tzinfo=UTC)
+    input_path = tmp_path / "orphan.wav"
+    input_path.write_bytes(b"audio")
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.RUNNING,
+            created_at=now - timedelta(minutes=5),
+            started_at=now - timedelta(minutes=5),
+            last_heartbeat_at=now - timedelta(minutes=3),
+            completed_at=None,
+            updated_at=now - timedelta(minutes=3),
+            original_filename="orphan.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="aa" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="cpu",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "cpu"},
+            error_code=None,
+            error_message=None,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    reconcile_stale_running_jobs(
+        session_factory=session_factory,
+        settings=SimpleNamespace(worker_stale_after_seconds=30),
+        trigger="startup",
+        now=now,
+    )
+
+    job_response = client.get(f"/jobs/{job_id}")
+    result_response = client.get(f"/jobs/{job_id}/result")
+
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "failed"
+    assert job_response.json()["error_code"] == "processing_interrupted"
+    assert result_response.status_code == 409
+
+
+def test_reconciled_stale_running_with_result_keeps_public_result_available(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    """A stale running job with persisted result should recover to completed and keep /result at 200."""
+    now = datetime(2026, 3, 29, 12, 0, tzinfo=UTC)
+    input_path = tmp_path / "recovered.wav"
+    input_path.write_bytes(b"audio")
+
+    with session_factory() as session:
+        job = Job(
+            status=JobStatus.RUNNING,
+            created_at=now - timedelta(minutes=5),
+            started_at=now - timedelta(minutes=5),
+            last_heartbeat_at=now - timedelta(minutes=3),
+            completed_at=None,
+            updated_at=now - timedelta(minutes=3),
+            original_filename="recovered.wav",
+            stored_path=input_path.as_posix(),
+            input_sha256="bb" * 32,
+            file_size_bytes=input_path.stat().st_size,
+            media_duration_seconds=None,
+            device_used="cpu",
+            profile_selected="balanced",
+            config_snapshot={"profile": "balanced", "device_preference": "cpu"},
+            error_code="stale_error",
+            error_message="stale message",
+        )
+        job.result = JobResult(
+            transcript_text="hello world",
+            transcript_json={
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"}],
+                "language": "en",
+                "engine": "faster-whisper",
+                "model": "small",
+            },
+            speaker_segments_json=None,
+            detected_language="en",
+            metadata_json={"mode": "asr"},
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    reconcile_stale_running_jobs(
+        session_factory=session_factory,
+        settings=SimpleNamespace(worker_stale_after_seconds=30),
+        trigger="startup",
+        now=now,
+    )
+
+    job_response = client.get(f"/jobs/{job_id}")
+    result_response = client.get(f"/jobs/{job_id}/result")
+
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "completed"
+    assert result_response.status_code == 200
+    assert result_response.json()["transcript_text"] == "hello world"
