@@ -1,213 +1,193 @@
 # speech-jobs-backend
 
-Asynchronous backend service for audio processing, focused on transcription and speaker diarization through a job-based API.
+Asynchronous audio-job backend for transcription with optional speaker diarization.
 
-This project is being built as a professional backend portfolio piece. The main goal is to demonstrate system design, asynchronous processing, persistence, reproducibility, and clear engineering decisions rather than chasing the most advanced speech quality possible.
+## Executive summary
 
-## Status
+`speech-jobs-backend` is a backend-first portfolio project built around a small but realistic asynchronous processing flow: upload audio, persist a job, process it in a dedicated worker, and retrieve a curated public result.
 
-Active development.
+The repository focuses on architecture clarity, persistence-backed lifecycle management, reproducible local setup, and technically defensible scope control. It is designed to be easy to evaluate in an interview setting and practical to run locally.
 
-The repository now includes an executable FastAPI baseline with `GET /health`, `GET /jobs`, `GET /jobs/{job_id}`, `GET /jobs/{job_id}/result`, and `POST /jobs/upload`, plus centralized settings, lazy database bootstrap, initial ORM models (`Job`, `JobResult`), Alembic integration, an initial migration applied to PostgreSQL, and a dedicated worker that runs real ASR transcription with `faster-whisper` plus internal speaker diarization with `pyannote.audio`, persisting transcript and speaker segments in `JobResult`. The worker also exposes a CLI preflight to verify runtime readiness before real jobs run.
+The current baseline is CPU-first and local-first. GPU execution and diarization are supported as optional paths when the required runtime and model access are available.
 
-## v1 Goals
+## What this repo demonstrates
 
-Version 1 is planned to include:
+- Asynchronous job handling with a dedicated worker instead of in-request processing.
+- PostgreSQL-backed lifecycle and result persistence, versioned through Alembic migrations.
+- A small public API with explicit upload, job-status, and result-retrieval contracts.
+- Curated result retrieval that exposes stable public fields instead of raw internal metadata.
+- Runtime readiness checks through worker preflight.
+- Controlled local reproducibility with `docker compose`, tests, and CI validation.
 
-- Audio upload through an HTTP API
-- Job creation and status tracking
-- Asynchronous processing through a dedicated worker
-- Speech transcription
-- Speaker diarization
-- Persistent storage of job state and processing results
-- Local development with Docker Compose
-- Database schema management with migrations
-- Basic tests and validation workflow
-- Minimal visible CI/CD for install, tests, and basic app verification
+## Project status
 
-## Architecture Direction
+- FastAPI API, PostgreSQL persistence, and a dedicated worker are implemented and runnable.
+- The public API includes `POST /jobs/upload`, `GET /jobs/{id}`, and `GET /jobs/{id}/result`.
+- Local setup is reproducible through a CPU-first `docker compose` flow.
+- GPU execution and diarization remain optional runtime paths.
+- Tests and CI cover the current backend baseline.
 
-The initial architecture is intentionally backend-first:
+## Table of contents
 
-- **FastAPI** for the HTTP API
-- **PostgreSQL** for persistence
-- **SQLAlchemy 2.x** for database access
-- **Alembic** for migrations
-- **Dedicated worker process** for heavy background processing
-- **faster-whisper** for transcription
-- **pyannote.audio** for diarization
+- [5-minute quickstart](#5-minute-quickstart)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [What this repo does not try to be](#what-this-repo-does-not-try-to-be)
+- [Project structure](#project-structure)
+- [Repository map / Where to read next](#repository-map--where-to-read-next)
+- [Base runtime requirements](#base-runtime-requirements)
+- [Optional GPU path](#optional-gpu-path)
+- [Optional diarization-enabled path](#optional-diarization-enabled-path)
+- [Minimal API example](#minimal-api-example)
+- [Contributing](#contributing)
+- [License / Third-party](#license--third-party)
 
-## Design Priorities
+## 5-minute quickstart
 
-This project prioritizes:
+The main local path uses `docker compose` and the canonical example audio `examples/audio/monologue_james_6m20s.m4a`.
 
-1. Architecture quality
-2. Reproducibility
-3. Clarity of data flow and API design
-4. Stable asynchronous job processing
-5. Useful transcription and diarization results
+1. Copy the environment template.
+2. Start PostgreSQL.
+3. Apply database migrations.
+4. Start the API and worker.
+5. Optionally verify `GET /health`.
+6. Upload one audio file.
+7. Read job status.
+8. Read the public result.
 
-## Out of Scope for v1
+```bash
+cp .env.example .env
+docker compose up -d db
+docker compose run --rm api alembic upgrade head
+docker compose up -d api worker
+```
 
-The following are intentionally excluded from the first version:
+Optional readiness checks:
 
-- Multi-user support
-- Authentication and authorization
-- Cloud deployment
-- Distributed task queues such as Celery
-- Speaker identification by real identity
-- Advanced observability stack
-- Frontend application
+- API health via `GET /health`:
 
-These may be considered in future iterations, but they are not part of the initial scope.
+```bash
+curl http://127.0.0.1:8000/health
+```
 
-## Repository Structure
+- Worker runtime readiness:
 
-The repository will progressively include:
+```bash
+python -m app.worker.main --preflight
+```
 
-- project governance documents
-- execution planning documents
-- Python project metadata
-- application source code
-- tests
-- migration files
-- local storage support for uploaded media and generated artifacts
+Upload one audio file with the public API:
 
-## Notes
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/upload \
+  -F "file=@examples/audio/monologue_james_6m20s.m4a" \
+  -F "profile=balanced" \
+  -F "device_preference=auto"
+```
 
-This repository follows an incremental development approach with small, stable, reviewable steps.
+The upload response returns a job id. Use that value in the next requests:
 
-Implementation details, coding rules, architectural decisions, milestones, and execution planning are documented in dedicated project files inside the repository.
+```bash
+curl http://127.0.0.1:8000/jobs/JOB_ID
+curl http://127.0.0.1:8000/jobs/JOB_ID/result
+```
 
-## Worker Runtime Preflight
+Expected public-result behavior:
 
-Use the worker CLI to verify runtime readiness before processing real jobs:
-
-- `python -m app.worker.main --preflight`
-- `python -m app.worker.main --preflight --device cpu`
-- `python -m app.worker.main --preflight --device cuda`
-
-The worker preflight is the recommended way to verify real runtime readiness for the local environment.
-
-Base runtime requirements:
-
-- reachable PostgreSQL database with the expected schema/migrations applied
-- local worker environment installed and able to import the configured runtime stack
-
-Optional GPU path:
-
-- only required when `cuda` is selected
-- needs a compatible local CUDA-enabled runtime for the ASR and diarization stacks you expect to use
-
-Optional diarization-enabled path:
-
-- only required when full diarization execution is expected
-- needs a valid `HUGGINGFACE_TOKEN`
-- gated diarization models or repositories may require access to be accepted in the relevant Hugging Face account before the token works
-
-The preflight checks ASR and diarization separately and reports a global `READY` state only when both components are ready for the selected device path. This matters because ASR uses the `ctranslate2` / `faster-whisper` stack, while diarization depends on `torch` / `pyannote.audio` plus the required Hugging Face token.
-
-When diarization succeeds, `speaker_segments_json` is persisted as a JSON list, including `[]` when normalization yields no valid segments. When ASR succeeds but diarization fails in a controlled way, the worker now still preserves the transcript, marks the job as `completed`, stores `speaker_segments_json = None`, and records the degraded diarization outcome in internal result metadata.
-
-## Local Compose Baseline
-
-`S21` adds a minimal CPU-first local baseline with `db`, `api`, and `worker` in `docker-compose.yml`.
-
-Start by copying `.env.example` to `.env`.
-
-Baseline Compose variables:
-
-- `DATABASE_URL` remains part of the app configuration, but Compose overrides it for the in-container `db` service wiring
-- storage settings are also overridden inside Compose so `api` and `worker` share the mounted `./storage` volume through explicit container paths
-
-Optional diarization-enabled path variables:
-
-- `HUGGINGFACE_TOKEN`
-- `DIARIZATION_MODEL_ID`
-
-Minimal local flow:
-
-- `docker compose up -d db`
-- `docker compose run --rm api alembic upgrade head`
-- `docker compose up api worker`
-
-Minimal checks:
-
-- `GET /health` on `http://127.0.0.1:8000/health`
-- `docker compose run --rm worker python -m app.worker.main --preflight --device cpu`
-
-The Compose baseline is intentionally simple and CPU-first. It is meant for local reproducibility, not as a production deployment shape.
-
-## Public Result Retrieval
-
-Use `GET /jobs/{job_id}/result` to read the curated public result for one persisted job.
-
-- `200` when a `JobResult` exists
 - `404` when the job does not exist
-- `409` when the job exists but no public result is available yet
+- `409` when the job exists but the result is not ready yet
+- `200` when a persisted `JobResult` exists
 
-The public result payload exposes:
+## Architecture at a glance
 
-- `job_id`
-- `transcript_text`
-- `transcript_json` with only `segments` and `language`
-- `speaker_segments_json`
-- `detected_language`
-- `empty_transcript`
-- `diarization_attempted`
-- `diarization_status`
+| Area | Responsibility |
+| --- | --- |
+| API | Accept uploads and expose read-side job/result endpoints |
+| PostgreSQL | Persist job lifecycle and final results |
+| Worker | Claim pending jobs and run processing asynchronously |
+| Local storage | Hold uploaded inputs and optional local artifacts |
+| Alembic | Version and apply schema changes |
+| CI | Validate migrations, tests, and app import |
 
-The API does not expose raw `metadata_json` or internal runtime fields such as `worker_id`, `requested_device`, `resolved_device`, `compute_type`, `engine`, or `model`.
+For the full technical baseline, lifecycle, and design decisions, read [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Successful diarization keeps `speaker_segments_json` as a JSON list, including `[]` when normalization yields no valid segments. Controlled diarization degradation keeps `speaker_segments_json = null` while still returning the preserved transcript.
+## What this repo does not try to be
 
-## Local Storage Cleanup
+- An authentication or multi-user platform.
+- A distributed queue or task-orchestration system.
+- A cloud deployment template.
+- A frontend application.
+- A multi-tenant speech product with broad product surface area.
 
-`S18` now implements lightweight TTL-based cleanup for local storage only.
+## Project structure
 
-- uploaded input files under `input_storage_dir`
-- optional local artifacts under `artifact_storage_dir`
-- database rows in `jobs` and `job_results` remain persistent
+```text
+.
+|-- src/app/                # API, worker, persistence, and core app code
+|-- tests/                  # API, worker, lifecycle, recovery, and contract tests
+|-- alembic/                # Migration environment and versions
+|-- examples/               # Example audio used for local validation and demos
+|-- .github/workflows/      # CI workflow
+|-- docker-compose.yml      # Local db/api/worker baseline
+|-- README.md
+|-- ARCHITECTURE.md
+|-- CONTRIBUTING.md
+```
 
-Cleanup is worker-driven, not scheduler-driven:
+## Repository map / Where to read next
 
-- one best-effort cleanup pass runs when the worker starts in the non-preflight path
-- in long-running worker mode, another best-effort cleanup pass runs every `worker_cleanup_every_n_jobs` processed jobs when that setting is `>= 1`
-- if `worker_cleanup_every_n_jobs` is `0`, negative, or `None`, periodic cleanup is disabled without error
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) for technical design, lifecycle, and system boundaries.
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for safe change workflow and validation expectations.
+- Expect future localized READMEs to document specific areas such as the worker, tests, examples, API package, and Alembic layer.
 
-Input cleanup is conservative and DB-aware. A physical input file is deleted only when every job that references the same `stored_path` is already terminal (`completed` or `failed`) and expired by TTL. Active jobs and shared paths that still have a non-expired terminal reference are preserved. Cleanup only removes local files, never database results.
+## Base runtime requirements
 
-Blank or missing `stored_path` values are skipped safely and silently during cleanup. They are treated as anomalous legacy data for retention purposes, not as actionable path-safety failures.
+The supported baseline is CPU-first.
 
-Artifact cleanup stays local and filesystem-based. It deletes expired files under `artifact_storage_dir`, prunes empty directories when safe, and remains a no-op when artifact storage is disabled or absent.
+- Docker and Docker Compose for the main local path.
+- PostgreSQL through the Compose flow shown above.
+- `ffmpeg` / `ffprobe` available for audio validation and processing support.
+- The project Python environment available when running the app or worker directly outside Compose.
 
-`INPUT_RETENTION_DAYS=None` or `ARTIFACT_RETENTION_DAYS=None` disables cleanup for that category in a safe, non-deleting way and may surface as a lightweight warning/report entry. Negative values also disable cleanup for that category.
+`python -m app.worker.main --preflight` is a useful readiness signal, but it does not replace the baseline setup above.
 
-Relevant retention settings and defaults:
+## Optional GPU path
 
-- `INPUT_RETENTION_DAYS=7`
-- `ARTIFACT_RETENTION_DAYS=7`
-- `WORKER_CLEANUP_EVERY_N_JOBS=10`
-- `STORE_INTERMEDIATE_ARTIFACTS=false`
+GPU execution is optional.
 
-## Operational Diagnostics
+- Use it only when you want a GPU-accelerated runtime for supported processing paths.
+- It depends on a compatible local runtime with CUDA and cuDNN available.
+- Keep the CPU-first path as the default baseline for local reproducibility.
 
-`S19` now adds minimal operational logging without changing API or worker semantics.
+## Optional diarization-enabled path
 
-- the API emits compact domain logs for accepted uploads and `GET /jobs/{job_id}/result` outcomes (`200`, `404`, `409`)
-- the worker logs claim/start, ASR, diarization, full success, degraded success, and terminal failure with `job_id`
-- cleanup passes now log one compact summary with counters, warning count, trigger, and `duration_ms`
+Diarization is optional and has its own requirements.
 
-Timings use `duration_ms` consistently:
+- Set a valid `HUGGINGFACE_TOKEN`.
+- Ensure the configured diarization model is accessible to that token/account.
+- Treat diarization as an optional extension on top of the baseline transcription flow.
 
-- upload handler timing is measured locally inside the upload endpoint
-- result retrieval timing is measured locally inside the result handler
-- worker logs include total job timing plus ASR and diarization phase timing
-- cleanup timing covers the whole cleanup pass
+## Minimal API example
 
-The logs are intentionally compact and avoid leaking transcript text, full transcript JSON, raw metadata payloads, or an advanced observability stack.
+```bash
+curl -X POST http://127.0.0.1:8000/jobs/upload \
+  -F "file=@examples/audio/monologue_james_6m20s.m4a" \
+  -F "profile=balanced" \
+  -F "device_preference=auto"
 
-## Demo Audio Sources
+curl http://127.0.0.1:8000/jobs/JOB_ID
+curl http://127.0.0.1:8000/jobs/JOB_ID/result
+```
 
-- `conversation_two_speakers_10m.m4a`: excerpt from "Colm Walsh on holy wells and other places around Graiguenamanagh", source Wikimedia Commons, author A.-K. D., license CC0 1.0
-- `monologue_james_6m20s.m4a`: source recording "James speaking West Riding Yorkshire English", source Wikimedia Commons / Wikitongues, author Wikitongues Inc, license CC0 1.0
+Public result semantics stay simple:
+
+- `404` when the job does not exist
+- `409` when the result is not ready yet
+- `200` when `JobResult` exists
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow. As a baseline, keep changes small, verify the affected behavior, and avoid mixing unrelated edits.
+
+## License / Third-party
+
+The repository is intended to ship under MIT. Relevant third-party components, models, and demo-resource notes are meant to be centralized in `THIRD_PARTY.md` as that public documentation layer is completed.
