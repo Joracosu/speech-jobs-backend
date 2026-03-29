@@ -1,159 +1,63 @@
-# Contributing
+# Before you change anything
 
-This document defines the initial contribution workflow for `speech-jobs-backend`.
+Keep changes small, technically grounded, and easy to review.
 
-The repository is being built incrementally as a backend portfolio project. Contributions, including AI-assisted changes, must preserve clarity, stability, and traceability.
+- Verify the behavior you are changing.
+- Avoid mixing unrelated edits in one change set.
+- Update only the public docs that are actually affected.
+- Prefer the implemented repository state over stale wording or assumptions.
 
-## Contribution Principles
+## Minimal validation baseline
 
-- Keep changes small, focused, and reviewable.
-- Prefer stable, verifiable progress over large speculative changes.
-- Do not mix unrelated work in the same change.
-- Do not rewrite or reorder working code without a strong reason.
-- Respect the current scope of v1.
-- Update project documents when the implemented reality changes.
+For most repository changes, the minimum public validation baseline is:
 
-## Local Environment
+```bash
+alembic upgrade head
+pytest -q
+python -c "from app.main import app; print('ok app', app.title, app.version)"
+```
 
-Contributors must work with:
+Add more targeted checks when your change affects a narrower or riskier area, but keep the baseline small and sustainable.
 
-- Python 3.12.6
-- a local virtual environment at `/.venv`
-- project dependencies installed inside `/.venv`
-- version-pinned dependencies reflected in `requirements.txt`
+## Accepted change types
 
-Do not install project dependencies into the global Python environment.
+- `bug fix`: correct a real defect without expanding scope.
+- `docs`: improve public documentation so it matches the implemented repository.
+- `tests`: tighten or extend coverage around existing behavior.
+- `small isolated feature`: add one bounded capability that fits the current backend baseline.
+- `migrations`: evolve persisted schema intentionally and keep Alembic history aligned.
 
-## Setup Expectations
+## Change type -> expected updates
 
-The exact setup commands may evolve, but the expected workflow is:
+| change type | expected updates | minimum validation |
+| --- | --- | --- |
+| `bug fix` | Update affected tests and public docs if user-visible behavior changed. Update `ARCHITECTURE.md` if the technical baseline, lifecycle, public contract, or explicit boundaries changed. | Public baseline plus targeted evidence for the fixed area |
+| `docs` | Update only the docs touched by the real behavior change. Keep public docs free of internal jargon, delivery tracking, and private references. | Verify commands, paths, filenames, and claims against the repo |
+| `tests` | Keep tests aligned with real behavior. Update docs only if the tests reveal stale public wording. | `pytest -q` plus any targeted checks needed by the changed tests |
+| `small isolated feature` | Add focused tests, update public docs, and update `ARCHITECTURE.md` when the baseline, lifecycle, contract, or boundaries move. | Full public baseline plus targeted validation for the new behavior |
+| `migrations` | Keep Alembic state, persistence behavior, and affected docs aligned. Add or adjust tests when schema-backed behavior changes. | `alembic upgrade head`, `pytest -q`, and the app import check |
 
-1. Clone the repository.
-2. Create and activate `/.venv`.
-3. Install the required dependencies.
-4. Install the project in editable mode with `pip install -e .`.
-5. Confirm that the selected interpreter belongs to `/.venv`.
-6. Run the available validation commands before considering the work complete.
+## Documentation touchpoints
 
-For the current Windows/CUDA local target, install dependencies from `requirements.txt` as written. The file now includes the PyTorch CUDA `cu128` index and pins the matching `torch` / `torchaudio` wheels needed for the diarization stack to see the local NVIDIA GPU.
+- Update `README.md` when the quickstart, public-facing API examples, runtime entry points, or repo navigation change.
+- Update `ARCHITECTURE.md` when the technical baseline, lifecycle, public contract, or explicit system boundaries change.
+- Update `CONTRIBUTING.md` when the safe-change workflow or the minimal validation baseline changes.
+- More localized READMEs are planned later. Do not reference them as if they already exist.
 
-When schema changes are introduced, the expected local workflow now also includes Alembic commands such as:
+## Source of truth
 
-- `alembic revision --autogenerate -m "your message"`
-- `alembic upgrade head`
-- `alembic current`
+Observed behavior wins over stale prose. Code defines what is currently implemented, and public documentation must match that implemented baseline instead of describing an intended future state.
 
-Local upload validation also expects `ffprobe` to be available in `PATH`.
+## Keep changes focused
 
-Local diarization validation also expects `HUGGINGFACE_TOKEN` to be set and authorized for the configured `DIARIZATION_MODEL_ID`. The current default model (`pyannote/speaker-diarization-community-1`) is gated on Hugging Face and requires accepting its access conditions with the same account that owns the token.
+- Do not mix unrelated fixes, refactors, docs cleanup, and feature work in one change set.
+- Do not use public docs to expose runs, delivery logs, prompts, AI workflow notes, or private-document references as normal reading.
+- If a change does not belong to the current scope, leave it for a separate follow-up.
 
-The local worker can be run with `python -m app.worker.main` or `python -m app.worker.main --once`.
+## Final checklist
 
-## Validation Expectations
-
-Before a contribution is considered complete, validate at least the parts that were affected.
-
-Expected validation categories will progressively include:
-
-- formatting and linting checks
-- unit tests
-- integration checks for critical flows
-- manual verification when automation is not yet available
-
-Do not claim completion without evidence that the modified area still works.
-
-## Documentation Drift
-
-After each meaningful change, review whether the following documents need updates:
-
-- `AGENTS.md`
-- `PROJECT_CONTEXT.md`
-- `ARCHITECTURE.md`
-- `CODING_RULES.md`
-- `MILESTONES.md`
-- `EXECUTION_PLAN.md`
-- `DELIVERY_LOG.md`
-
-Only update the files that are actually affected. Avoid cosmetic rewrites.
-
-## Commit Discipline
-
-Commits should be:
-
-- small and coherent
-- in plain English
-- easy to understand at a glance
-- representative of the main change
-
-Preferred style:
-
-- short sentence
-- no cryptic abbreviations
-- no unnecessary jargon
-
-Examples:
-
-- `Add project planning documents`
-- `Set up Python project files`
-- `Add job database models`
-
-Commits are created manually by the project owner, but suggested commit messages may be proposed during implementation work.
-
-## Refactoring Rules
-
-Refactoring is allowed only when it clearly improves the code and remains proportional to the task.
-
-Avoid:
-
-- opportunistic file-wide rewrites
-- large formatting-only edits mixed with functional changes
-- broad renaming without need
-- speculative abstractions introduced too early
-
-If a refactor is necessary, keep it explicit and narrowly scoped.
-
-## Encoding and File Integrity
-
-All text files must remain:
-
-- UTF-8 encoded
-- readable
-- free of broken special characters
-
-If a change introduces encoding corruption, it must be fixed in the same contribution.
-
-## Delivery Tracking
-
-Meaningful completed work should be reflected in `DELIVERY_LOG.md`.
-
-Entries should be factual and brief. This file is not a diary.
-
-## Quality Gates
-
-Some steps in the project are followed by a **Quality Gate**.
-
-A Quality Gate is a planned checkpoint used to review:
-
-- technical consistency
-- documentation consistency
-- scope control
-- implementation stability
-- readiness for the next stage
-
-When a contribution reaches a Quality Gate, do not proceed mechanically. Review the repository state before continuing.
-
-## Scope Reminder
-
-This repository is intentionally focused on a backend-first v1.
-
-The following are out of scope for the first version unless the project definition is explicitly updated:
-
-- frontend development
-- authentication
-- multi-user support
-- cloud production deployment
-- Celery or distributed task orchestration
-- speaker identification by real identity
-- advanced observability platforms
-
-Contributions should reinforce the project goals, not expand them without justification.
+- The change is small, coherent, and reviewable.
+- The affected behavior was validated with the minimum baseline and any necessary targeted checks.
+- Tests, migrations, and docs were updated only where the change truly requires them.
+- `README.md`, `ARCHITECTURE.md`, and `CONTRIBUTING.md` still respect their ownership boundaries.
+- Public-facing text stays free of internal jargon, delivery tracking, and private workflow references.
