@@ -139,7 +139,15 @@ For the full technical baseline, lifecycle, and design decisions, read [ARCHITEC
 
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) for technical design, lifecycle, and system boundaries.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for safe change workflow and validation expectations.
-- Use the localized READMEs for area-specific onboarding into the worker, tests, examples, app, API, DB, services, and Alembic areas.
+- Use the localized READMEs for targeted onboarding, validation, and demo context:
+  - [Worker runtime and lifecycle](src/app/worker/README.md)
+  - [Tests taxonomy and suite extension](tests/README.md)
+  - [Example audio usage and provenance](examples/README.md)
+- Follow the backend package map from [src/app/README.md](src/app/README.md):
+  - [API layer overview](src/app/api/README.md)
+  - [DB layer overview](src/app/db/README.md)
+  - [Services layer overview](src/app/services/README.md)
+  - [Alembic migration note](alembic/README.md)
 
 ## Base runtime requirements
 

@@ -41,6 +41,6 @@ The full suite taxonomy belongs to [`tests/README.md`](../../../tests/README.md)
 ## Related docs
 
 - [Repository overview](../../../README.md)
+- [App package map](../README.md)
 - [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
 - [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)
-- [App package map](../README.md)

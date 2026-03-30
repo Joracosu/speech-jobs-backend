@@ -36,7 +36,7 @@ There is no standalone `tests/test_services_*.py` layer today. The current servi
 ## Related docs
 
 - [Repository overview](../../../README.md)
-- [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
-- [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)
 - [App package map](../README.md)
 - [API layer overview](../api/README.md)
+- [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
+- [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)

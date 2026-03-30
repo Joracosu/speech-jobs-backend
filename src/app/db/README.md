@@ -41,7 +41,7 @@ As a complementary baseline, [`../../../alembic/README.md`](../../../alembic/REA
 ## Related docs
 
 - [Repository overview](../../../README.md)
-- [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
-- [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)
 - [App package map](../README.md)
 - [Alembic migration note](../../../alembic/README.md)
+- [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
+- [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)

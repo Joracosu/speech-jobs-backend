@@ -34,5 +34,6 @@ This README stays intentionally operational: it tells readers where migration be
 ## Related docs
 
 - [Repository overview](../README.md)
+- [DB layer overview](../src/app/db/README.md)
 - [Technical baseline and lifecycle](../ARCHITECTURE.md)
 - [Contribution workflow and validation baseline](../CONTRIBUTING.md)

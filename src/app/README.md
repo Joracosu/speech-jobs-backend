@@ -47,5 +47,8 @@ Relevant validation here stays at the package-map level:
 - [Repository overview](../../README.md)
 - [Technical baseline and lifecycle](../../ARCHITECTURE.md)
 - [Contribution workflow and validation baseline](../../CONTRIBUTING.md)
-- [API layer overview](api/README.md)
-- [Worker area overview](worker/README.md)
+- Backend package docs:
+  - [API layer overview](api/README.md)
+  - [DB layer overview](db/README.md)
+  - [Services layer overview](services/README.md)
+  - [Worker area overview](worker/README.md)
