@@ -99,7 +99,7 @@ Expected public-result behavior:
 
 ## Architecture at a glance
 
-![Architecture overview diagram](docs/assets/architecture-overview.png)
+![Architecture overview diagram](docs/assets/architecture-overview-v2.png)
 
 | Area | Responsibility |
 | --- | --- |
