@@ -99,6 +99,8 @@ Expected public-result behavior:
 
 ## Architecture at a glance
 
+![Architecture overview diagram](docs/assets/architecture-overview.png)
+
 | Area | Responsibility |
 | --- | --- |
 | API | Accept uploads and expose read-side job/result endpoints |
@@ -190,4 +192,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow. As a 
 
 ## License / Third-party
 
-The repository is intended to ship under MIT. Relevant third-party components, models, and demo-resource notes are meant to be centralized in `THIRD_PARTY.md` as that public documentation layer is completed.
+The repository ships under MIT. Relevant third-party components, models, and demo-resource notes are centralized in `THIRD_PARTY.md`.

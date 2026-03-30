@@ -49,4 +49,4 @@ Detailed provenance and intended usage for example media are intentionally left 
 
 ## Visual assets
 
-No dedicated public visual assets are added yet. If diagrams or demo visuals are introduced later, they should be documented here without turning this file into an asset catalog.
+The repository now includes one dedicated public visual asset: `docs/assets/architecture-overview.png`, used in `README.md` for the architecture overview. This section remains intentionally brief and does not try to become a broader asset catalog.
