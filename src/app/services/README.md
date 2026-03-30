@@ -4,7 +4,7 @@
 
 This folder contains narrow service helpers for application workflows that do not belong directly in the HTTP layer, the worker runtime, or the persistence layer.
 
-- [`uploads.py`](uploads.py) owns upload validation, ffprobe-based media inspection, local input storage, and the small helper types/errors used by that flow.
+- [`uploads.py`](uploads.py) owns upload validation, ffprobe-backed audio probing, local input storage, and the small helper types/errors used by that flow.
 - [`__init__.py`](__init__.py) marks the package and keeps the service layer intentionally small.
 
 ## Why it exists

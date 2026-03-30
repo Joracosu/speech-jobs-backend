@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, pool
 
 from app.db.base import Base
 from app.db.config import get_database_url
-import app.db.models  # noqa: F401
+import app.db.models  # noqa: F401  # Import models so Alembic can populate metadata.
 
 config = context.config
 

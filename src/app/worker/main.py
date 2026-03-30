@@ -27,7 +27,7 @@ def _configure_worker_logging() -> None:
 
 
 def _run_worker_execution(args: argparse.Namespace, settings: object) -> int:
-    """Run the non-preflight worker path with deferred heavy imports."""
+    """Run startup recovery/cleanup and then execute the non-preflight worker path."""
     from app.db.config import create_session_factory
     from app.worker.cleanup import log_storage_cleanup_report, run_storage_cleanup
     from app.worker.service import (

@@ -48,10 +48,10 @@ def _build_cutoff(
     cleanup_now: datetime,
     warnings: list[str],
 ) -> datetime | None:
-    """Return the retention cutoff or None when cleanup is disabled.
+    """Return the retention cutoff or `None` when cleanup is disabled.
 
-    `retention_days=None` and negative values both disable the category in a
-    safe, non-deleting way, while still surfacing one lightweight warning.
+    `retention_days=None` and negative values both disable deletion for the
+    category while still surfacing one lightweight warning.
     """
     if retention_days is None:
         warnings.append(
@@ -80,11 +80,10 @@ def _resolve_safe_path(
     category: str,
     warnings: list[str],
 ) -> Path | None:
-    """Return a canonicalized path only when it stays under the configured root.
+    """Return a resolved path only when it stays under the configured root.
 
-    Missing or blank path values are treated as benign legacy/anomalous input
-    and skipped quietly. Unsafe or malformed concrete paths still produce a
-    warning so cleanup reporting remains actionable without becoming noisy.
+    Missing or blank values are treated as benign legacy/anomalous input and
+    skipped quietly. Unsafe or malformed concrete paths still emit warnings.
     """
     if raw_path is None:
         return None
@@ -134,7 +133,7 @@ def _cleanup_expired_input_files(
     """Delete expired input files only when every referencing job is terminal and expired.
 
     Rows with missing or blank `stored_path` are skipped silently because they
-    are anomalous data for cleanup purposes, not actionable path-safety events.
+    are anomalous cleanup data, not actionable path-safety events.
     """
     if not input_root.exists():
         return 0, 0

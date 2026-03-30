@@ -19,6 +19,7 @@ class FakeWhisperModel:
         self._info = info
 
     def transcribe(self, _: str, task: str = "transcribe") -> tuple[list[SimpleNamespace], SimpleNamespace]:
+        """Return the preloaded fake segments and info payload."""
         assert task == "transcribe"
         return self._segments, self._info
 
@@ -148,6 +149,8 @@ def test_transcribe_audio_wraps_runtime_failures_as_asr_execution_error(
     audio_path.write_bytes(b"audio")
 
     class BrokenModel:
+        """Minimal fake model that fails during transcription."""
+
         def transcribe(self, *_: object, **__: object) -> None:
             raise RuntimeError("runtime boom")
 
