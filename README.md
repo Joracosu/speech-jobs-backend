@@ -139,7 +139,7 @@ For the full technical baseline, lifecycle, and design decisions, read [ARCHITEC
 
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) for technical design, lifecycle, and system boundaries.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) for safe change workflow and validation expectations.
-- Expect future localized READMEs to document specific areas such as the worker, tests, examples, API package, and Alembic layer.
+- Use the localized READMEs for area-specific onboarding into the worker, tests, examples, app, API, DB, services, and Alembic areas.
 
 ## Base runtime requirements
 

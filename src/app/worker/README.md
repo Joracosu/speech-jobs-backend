@@ -50,11 +50,11 @@ Relevant checks here are grouped by purpose rather than mapped exhaustively:
 - Local TTL cleanup behavior: `tests/test_worker_cleanup.py`.
 - Narrower helpers and broader integrated flow coverage: `tests/test_worker_runtime_checks.py`, `tests/test_worker_silence.py`, and `tests/test_critical_flows.py`.
 
-This section is intentionally narrower than a full test taxonomy. A future `tests/README.md` can own the complete suite map.
+This section is intentionally narrower than the full test taxonomy in [`tests/README.md`](../../../tests/README.md).
 
 ## Related docs
 
 - [Repository overview](../../../README.md)
 - [Technical baseline and lifecycle](../../../ARCHITECTURE.md)
 - [Contribution workflow and validation baseline](../../../CONTRIBUTING.md)
-- A future `tests/README.md` can expand the suite taxonomy once that localized README exists.
+- [Tests taxonomy and suite-extension guide](../../../tests/README.md)

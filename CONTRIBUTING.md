@@ -42,7 +42,7 @@ Add more targeted checks when your change affects a narrower or riskier area, bu
 - Update `README.md` when the quickstart, public-facing API examples, runtime entry points, or repo navigation change.
 - Update `ARCHITECTURE.md` when the technical baseline, lifecycle, public contract, or explicit system boundaries change.
 - Update `CONTRIBUTING.md` when the safe-change workflow or the minimal validation baseline changes.
-- More localized READMEs are planned later. Do not reference them as if they already exist.
+- Update the relevant localized README when the changed area already has one.
 
 ## Source of truth
 
