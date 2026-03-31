@@ -45,7 +45,7 @@ This document is a short public reference for external components and resources 
 - **`examples/audio/conversation_two_speakers_10m.m4a`**  
   Used here as an additional local example resource for multi-speaker-oriented validation.
 
-Detailed provenance and intended usage for example media live in [`examples/README.md`](examples/README.md).
+These are bundled demo audio assets. The public docs describe repository-local usage for them, and do not make a verified upstream provenance or license claim. See [`examples/README.md`](examples/README.md) for the usage-oriented notes.
 
 ## Visual assets
 

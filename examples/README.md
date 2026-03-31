@@ -7,6 +7,8 @@ This folder contains the public demo audio assets currently bundled with the rep
 - [`audio/monologue_james_6m20s.m4a`](audio/monologue_james_6m20s.m4a)
 - [`audio/conversation_two_speakers_10m.m4a`](audio/conversation_two_speakers_10m.m4a)
 
+The current public docs describe how these bundled files are used inside this repository. They do not make a verified upstream provenance or license claim for either asset.
+
 ## Why it exists
 
 This folder exists to give the repository a small, reproducible set of local example inputs for demos and onboarding.
@@ -15,8 +17,8 @@ It owns how those bundled assets are used inside the repo today. It does not own
 
 ## Key files to read first
 
-- [`audio/monologue_james_6m20s.m4a`](audio/monologue_james_6m20s.m4a): the canonical quickstart/demo audio referenced by the root `README.md`.
-- [`audio/conversation_two_speakers_10m.m4a`](audio/conversation_two_speakers_10m.m4a): an additional local example resource associated with multi-speaker-oriented review and demos.
+- [`audio/monologue_james_6m20s.m4a`](audio/monologue_james_6m20s.m4a): the canonical quickstart/demo asset used by the root `README.md`.
+- [`audio/conversation_two_speakers_10m.m4a`](audio/conversation_two_speakers_10m.m4a): a bundled multi-speaker example asset kept for repository-local demos and used for repository-local demos and multi-speaker validation.
 
 ## What should not live here
 
@@ -33,7 +35,7 @@ These bundled files are documented and validated mainly through their public usa
 - [`THIRD_PARTY.md`](../THIRD_PARTY.md) keeps the short public reference for both bundled assets.
 - The automated suite mostly uses synthetic or temporary audio fixtures rather than depending directly on these bundled `.m4a` files.
 
-The current public repo supports the role of each file inside the project, but it does not yet support stronger claims about upstream provenance or licensing beyond the short notes already kept in `THIRD_PARTY.md`.
+For both `audio/monologue_james_6m20s.m4a` and `audio/conversation_two_speakers_10m.m4a`, the public documentation currently supports repository-local usage only.
 
 ## Related docs
 
